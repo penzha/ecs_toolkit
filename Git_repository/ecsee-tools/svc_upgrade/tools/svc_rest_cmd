@@ -1,0 +1,159 @@
+#!/bin/bash
+
+USER='root' # default
+PASSWD='ChangeMe' # default
+
+HOST=`hostname -i`
+SCRIPTNAME=`basename $0`
+
+#CMD="object/namespaces"
+#CMD="config/com.emc.ecs.chunk.gc.repo.enabled"
+
+XMLPARSING='| xmllint --format -'
+
+
+COOKIEFILE="/tmp/svc_cookie.tmp"
+
+usage()
+{
+	echo -e "usage: $SCRIPTNAME <options> \"Query\""
+	echo -e "Execute queries against ECS services"
+	echo
+	echo -e "Options:"
+	echo -e "\t-h: Help         - This help screen"
+	echo -e "\t-u: Username     - ECS management user for authentication"
+	echo -e "\t                   (default: root)"
+	echo -e "\t-p: Password     - Management user password"
+	echo -e "\t                   (default: ChangeMe)"
+	echo -e "\t-s: Stat service - Execute query against ECS stat service instead"
+	echo -e "\t                   of default (ECS Management REST API service)"
+	echo -e "\t-x: XML output   - Interpret results as XML output"
+	echo -e "\t                   (Default for REST service - enabled)"
+	echo -e "\t-j: JSON output  - Interpret results as JSON output"
+	echo -e "\t                   (Default for stat service - enabled)"
+	echo
+	echo -e "Examples:"
+	echo -e "Query namespaces with REST:"
+	echo -e "\t${SCRIPTNAME} object/namespaces"
+	echo
+	echo -e "Query GC Repository param value on stat service:"
+	echo -e "\t${SCRIPTNAME} config/com.emc.ecs.chunk.gc.repo.enabled"
+
+	exit 1
+
+}
+
+parse_args()
+{
+	JSON=0
+	STAT=0
+	XML=0
+
+	while [ -n "$1" ]; do
+		case $1 in
+			"" )
+				;;
+			"-u" )
+				if [ "$2" = "" ]; then
+					usage
+				fi
+				USER="$2"
+                shift 2
+				;;
+			"-p" )
+				if [ "$2" = "" ]; then
+					usage
+				fi
+				PASSWD="$2"
+                shift 2
+                ;;
+			"-s" )
+				# Execute query against stat service, on localhost port 9202, instead
+				# of the default (ECS Management REST API, port 4443
+				STAT=1
+
+				# By default, output in JSON format
+				if [[ $XML -ne 1 ]]; then
+					JSON=1
+				fi
+				shift 1
+				;;
+            "-j" )
+                JSON=1
+				shift 1
+
+				;;
+            "-x" )
+				# XML format
+				XML=1
+                JSON=0
+				shift 1
+
+				;;
+			"-h" )
+				usage
+				;;
+			"-"* )
+				usage
+				;;
+			* )
+				if [ -n "$2" ]; then # Too many arguments with no flag - expect only one (the rest/json command to run)
+					usage
+				else
+					CMD="$1"
+					shift 1
+				fi
+				;;
+		esac
+	done
+}
+
+
+run_rest_cmd() {
+    curl -sS -H "${TOKEN}" -k https://${HOST}:4443/$CMD | xmllint --format -
+}
+
+run_stat_cmd() {
+    curl -sS -H "${TOKEN}" -H "Accept:application/json" http://localhost:9202/$CMD
+}
+
+
+
+# Main logic
+
+parse_args $*
+
+
+# Attempt to authenticate
+#curl -sS -L --location-trusted -k https://${HOST}:4443/login?using-cookies=true -u "$USER:$PASSWD" -c $COOKIEFILE 2>&1 >/dev/null
+TOKEN=`curl -sS -i -k https://${HOST}:4443/login -u "$USER:$PASSWD" `
+#| grep X-SDS-AUTH-TOKEN | dos2unix` # dos2unix is called to remove an extra carriage return this call includes at the end of the line
+
+# If an error has occurred while authenticating, we should receive a string like:
+# <?xml version="1.0" encoding="UTF-8" standalone="yes"?><error><code>401</code><description>Unauthorized</description><details>Access is denied due to invalid or expired credentials</details></error>
+
+if [[ $TOKEN == *"<error><code>"* ]]; then
+	# Get error escription
+
+	ERROR=`echo $TOKEN | awk -F\</description\>\<details\> '{ print $2 }' | awk -F\</details\>\</error\> '{ print $1 }'`
+
+	echo "ERROR occurred while authenticating.  Message was:"
+	echo $ERROR
+	exit 100
+fi
+
+if [ $STAT -eq 1 ]; then
+	output="$(run_stat_cmd)"
+else
+	output="$(run_rest_cmd)"
+fi
+
+if [ $JSON -eq 0 ]; then
+	echo "$output" | xmllint --format -
+else
+	echo "$output"
+fi
+
+# Disconnect session
+curl -sS -k https://${HOST}:4443/logout 2>&1 > /dev/null
+

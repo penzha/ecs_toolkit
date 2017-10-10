@@ -1,0 +1,278 @@
+#!/usr/bin/perl
+
+#use Switch;
+#use Data::Dumper;
+
+
+#input file for all the links to be parsed
+my $ecsInstance=shift;
+my $level=shift;
+my $rawData=shift;
+
+my $finalDataFilename="FinalData_".$level;
+#delete results file
+`rm $finalDataFilename`;
+
+#get the necessary links for parsing;
+getLinks($ecsInstance);
+
+my $file="inputLinks";
+
+open FILE,$file
+        or die "Cannot open file";
+
+open (my $fh, '>', $finalDataFilename) or die "Cannot open file \n";
+
+my @fileData = <FILE>;
+my $masterData;
+my @results,@attributes,@finalResults;
+my $rCounter=0, $aCounter=0;
+my $link;
+my $nextLink;
+
+
+foreach my $fileLink (@fileData){
+        print $fh "$fileLink \n";
+}
+
+foreach $link (@fileData){
+    print "Processing $link\n";
+    if($rawData != 1){
+        chomp $link;
+        $link =~ s/\r//g;       #to remove the ^M char
+        #print $fh $link.",";
+        my $data = `curl "$link"`;
+        my $masterData = $data;
+
+        #write all data to a file
+        #writeDataToFile($data);
+        `rm inputFile`;
+        writeDataToFile($data,"inputFile");
+        #extract / list all attributes from the data
+        listAttributes($data);
+
+        #filter the data to necessary design
+        $nextLink=ripData($data);
+
+        if(defined($nextLink) ){
+          if($nextLink  ~~ @fileData){
+                #Do nothing
+                print "Exists : $nextLink\n";
+          }
+          else{
+                 print"Adding : $nextLink \n";
+                 @fileData[(scalar @fileData)]=$nextLink;
+         }
+        }
+        else{
+         print "Not Adding: $nextLink \n";
+        }
+
+
+
+        #print "Attribute List\n";
+        #print Dumper @attributes;
+        #print "End Attribute List\n";
+    }
+    else{
+        my $data = `curl "$link"`;
+        writeDataToFile($data,"rawData");
+    }
+        #print "Done with $link\n";
+}
+my $attr;
+foreach $attr (@attributes){
+        print $fh $attr.",";
+}
+
+print $fh "\n";
+
+foreach my $newNext (@fileData){
+        print $fh $newNext."\n";
+}
+
+
+sub ripData{
+        my $myFile = "inputFile";
+        open FILE,$myFile or die "Cannot open file\n";
+
+        my $lineData, $match;
+        my $copyCount=0;
+        my $returnLink;
+
+
+        while ($lineData = <FILE>) {
+                #print  "Line: $lineData\n";
+                   if($lineData =~ /chunkId [a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+/){
+                        #everytime a 'chunkId' is found, write the last to results file
+                        $copyCount=0;
+                        writeResults();
+
+                        $lineData =~ /(chunkId [a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+-[a-zA-Z0-9]+)/ ;
+                        $match = $1;
+                        #print "Matched : $match \n";
+                        buildResults($match);
+                   }
+                   elsif ($lineData =~ /copies/){
+                        $copyCount++;
+                        $match="copies{:".$copyCount;
+                        #print "Matched : $match \n";
+                        buildResults($match);
+                   }
+                    elsif ($lineData =~ /Get more/){
+                            $returnLink=processLink($lineData);
+                    }
+                   elsif ($lineData =~ /^[a-zA-Z0-9]+: [0-9]+/){
+                        $lineData =~ /(^[a-zA-Z0-9]+: [0-9]+)/;
+                        $match = $1;
+                        #print "Matched : $match \n";
+                        buildResults($match);
+                   }
+                   elsif ($lineData =~ /^[A-Z][a-z]+: "[a-z]+:.*?"/){
+                        $lineData =~ /(^[a-zA-Z0-9]+: ".*?")/;
+                        $match = $1;
+                        #print "Matched : $match \n";
+                        buildResults($match);
+                   }
+                   elsif ($lineData =~ /^[a-zA-Z0-9]+: [a-zA-Z0-9]+.*?/){
+                        $lineData =~ /(^[a-zA-Z]+: [a-zA-Z]+)/ ;
+                        $match = $1;
+                        #print "Matched : $match \n";
+                        buildResults($match);
+                   }
+                   else {
+                        #print "No Match : $lineData\n";
+                   }
+        }
+        writeResults();
+        close FILE;
+        print " Returning: $returnLink\n";
+        return $returnLink;
+}
+
+
+sub buildResults(){
+        my $myResult = shift;
+
+        #print "Result: $myResult\t";
+        if ($myResult =~ "chunkId"){
+                my ($key, $value)=split(' ',$myResult);
+                chomp($key);
+                $finalResults[0] = $value;  # new chunkId
+        }
+        else{
+                my ($key, $value)=split(':',$myResult);
+                my $resIndex = getIndex($key);
+                #$finalResults[$resIndex] = $finalResults[$resIndex]."/".$value;
+                $finalResults[$resIndex] = $value;
+                #print "adding : $key\n";
+        }
+
+        #print "Current Results List\n";
+        #print Dumper @finalResults;
+        #print "End Current Results\n";
+}
+
+sub getIndex(){
+        my $gvnKey = shift;
+        my $counter=0;
+
+        for($counter; $counter < (scalar @attributes); $counter++){
+                if($gvnKey ~~ $attributes[$counter]){
+                        #print "Sending Index $counter\n";
+                        return $counter;
+                }
+        }
+        return $counter;
+}
+
+
+sub listAttributes(){
+        my $myFile = "inputFile";
+        open FILE,$myFile or die "Cannot open file\n";
+
+        my $lineData, $match;
+        $lineData=<FILE>;
+
+        if("chunkId" ~~ @attributes){
+                #do nothing
+        }
+        else{
+                $attributes[$aCounter++]="chunkId";
+        }
+        do{
+          #print "Line: $lineData\n";
+          if(($lineData =~ /^[a-zA-Z]+:/) || ($lineData =~ /copies/)){
+                my($key, $value)=split(':',$lineData);
+                chomp($key);
+                $key=~ s/\s+//g;
+
+                if($key ~~ @attributes){
+                        #continue or do nothing;
+                        #print "Exists: $key\n";
+                }
+                else{
+                 my($key, $value)=split(':',$lineData);
+                 chomp($key);
+                 $key=~ s/\s+//g;
+                 $attributes[$aCounter++]=$key;
+                }
+          }
+        }while ($lineData = <FILE>);
+        #print Dumper @attributes;
+}
+
+sub writeResults(){
+        #print "Check here\n";
+        #print Dumper @finalResults;
+        #print "EndFinalResults\n";
+
+        for($i=0; $i<(scalar @finalResults); $i++){
+                print $fh "$finalResults[$i],";
+        }
+        print $fh "\n";
+        @finalResults = ();
+}
+
+sub writeDataToFile(){
+        $dataToWrite=shift;
+        my $myFile=shift;
+
+        open (my $fileHandle, '>>', $myFile) or die "Cannot open file \n";
+        print $fileHandle $dataToWrite;
+        close ($fileHandle);
+}
+
+sub getLinks(){
+   my $ecs=shift;
+   my $file="inputLinks";
+
+   `curl http://$ecs:9101/diagnostic/DumpOwnershipInfo > /dev/null`;
+   `curl http://$ecs:9101/diagnostic/CT/$level/ | xmllint --format - | grep table_detail_link | awk -F"[<|>|?]" '{print \$3"CHUNK?maxkeys=1024&showvalue=gpb"}' > linkSet$level`;
+
+   open (my $fileHandle, '>', $file) or die "Cannot open file \n";
+
+   my $oddL1 = `grep script linkSet$level`;
+
+   my ($part1, $part2) = split ('<pre>',$oddL1);
+        print $fileHandle $part2;
+   my ($part1, $part2) = split ('<pre>',$oddL2);
+        print $fileHandle $part2;
+
+  close($file);
+
+
+   `grep '^http' linkSet$level >> $file`;
+
+
+}
+
+ sub processLink(){
+           my $givenLine=shift;
+
+            #Extract the NEXT link & return;
+            my ($part1,$part2) = split("=\"",$givenLine);
+            my ($part3, $part4) = split("\">",$part2);
+                #print "Processing: $part3\n";
+          return $part3;
+ }

@@ -1,0 +1,175 @@
+#!/usr/bin/python
+
+# Copyright (c) 2013-2014 EMC Corporation
+# All Rights Reserved
+#
+# This software contains the intellectual property of EMC Corporation
+# or is licensed to EMC Corporation from third parties.  Use of this
+# software and the intellectual property contained therein is expressly
+# limited to the terms and conditions of the License Agreement under which
+# it is provided by or on behalf of EMC.
+
+"""
+Module to execute commands on all the hosts that are given in the input
+"""
+
+import commands
+import vcommon as common
+import os
+import sys
+import threading
+from optparse import OptionParser
+
+AUDIT_TEMPLATE = "logger -i -p auth.info viprexec PID %s SUDO ${SUDO_USER} --"
+
+def encapsulate_shell_cmd(cmd):
+	return("'"+cmd.replace("'", "'\\''")+"'")
+
+
+
+def ssh(user, host, passwd, remt_cmd):
+    """ Will SSH to host and run command provided
+    """
+    audit = AUDIT_TEMPLATE % os.getpid() + ' CMD %s' % encapsulate_shell_cmd(remt_cmd)
+    cmd = ("ssh %s -o StrictHostKeyChecking=no -o SendEnv=SUDO_USER "
+           "-o ConnectTimeout=%d -l %s %s %s" %
+           (common.OPT, common.TIMEOUT, user, host, encapsulate_shell_cmd(audit+"; "+remt_cmd)))
+
+    #print "Command is:"
+    #print cmd
+
+    if passwd != "":
+        cmd = "sshpass -p %s %s"%(passwd, cmd)
+
+    for i in xrange(common.RETRY_COUNT):
+        audit = AUDIT_TEMPLATE % os.getpid() + " USER %s HOST %s" % (user, host)
+        status, output = commands.getstatusoutput(audit)
+        if status != 0:
+            return (status, output)
+        status, output = commands.getstatusoutput(cmd)
+        if status == 0:
+            return (status, output)
+        # Try again
+        i = i + 1
+
+    return (status, output)
+
+class ExecCmd(threading.Thread):
+    """ Run remote command
+    """
+    def __init__(self, host, passwd, cmd):
+        threading.Thread.__init__(self)
+        self.cmd = cmd
+        self.host = host
+        self.passwd = passwd
+        self.ret = common.PRINT_RET_VAL
+        self.container_name = common.CONTAINER_NAME
+
+    def run(self):
+        """ Initate SSH command (with container if required) for the host
+        """
+        user = "root"
+        if self.container_name != "":
+            docker_cmd = "docker exec %s" % self.container_name
+            enc_cmd=encapsulate_shell_cmd(self.cmd)
+
+            self.cmd = docker_cmd+" sh -c "+enc_cmd
+
+        ret, out = ssh(user, self.host, self.passwd, self.cmd)
+        print "\nOutput from host : %s \n%s" %(self.host, out)
+        if self.ret:
+            print "\nReturn value from host %s is %d" %(self.host, ret)
+
+def rexec(hosts, passwd, cmd):
+    """ Spawns a thread for each host and execs passed command
+    """
+    threads = []
+    for host in hosts:
+        thr = ExecCmd(host, passwd, cmd)
+        threads.append(thr)
+        thr.start()
+        if common.SERIAL:
+            thr.join()
+
+    # wait for the threads to finish
+    for thread in threads:
+        thread.join()
+
+if __name__ == '__main__':
+
+    USAGE = r"""
+    %s [OPTIONS] "cmd"
+
+    cmd can be any linux or bourne command
+    When no option is specified, the file is copied to all the
+    nodes in %s file.
+    It will look in %s first, then working dir
+    You can make your own as well!
+    """ % (os.path.basename(__file__), common.DEFAULT, common.HOME_DEFAULT)
+
+    PARSER = OptionParser(usage=USAGE)
+    PARSER.add_option("-f", "--hosts_file", dest="filename",
+                      help="Read data from FILENAME. Each line in the "
+                      "file should be a valid host name")
+    PARSER.add_option("-i", "--serial", action="store_true",
+                      help="Run command one node at a time")
+    PARSER.add_option("-n", "--hosts", dest="hosts",
+                      help="Comma separated list of host names or IP addresses")
+    PARSER.add_option("-X", "--except", dest="notme", action="store_true",
+                      help="Skip invocation of the command on the host running"
+                      "this program")
+    PARSER.add_option("-e", dest="prtret", action="store_true",
+                      help="Print the return value of the command executed "
+                      "on the hosts")
+    PARSER.add_option("-p", dest="passwd", help="Login password")
+    PARSER.add_option("-c", dest="container", action="store_true",
+                      help="Execute command inside object container.")
+    PARSER.add_option("--dock", help="Name of the container inside which the "
+                      "command has to be run\n e.g (object-main | "
+                      "fabric-zookeeper)")
+
+   # PARSER.add_option("-v", "--verbose",
+   #                   action="store_true", dest="verbose")
+   # PARSER.add_option("-q", "--quiet",
+   #                   action="store_false", dest="verbose")
+
+    (OPTIONS, ARGS) = PARSER.parse_args()
+    if len(ARGS) == 0:
+        PARSER.print_help()
+        sys.exit(-1)
+
+    if OPTIONS.serial:
+        common.SERIAL = True
+
+    # Build the target list
+    HOSTS = common.build_host_list(OPTIONS)
+
+    if len(HOSTS) == 0:
+        print "No hosts passed"
+        PARSER.print_help()
+        sys.exit(1)
+
+    PASSWD = ""
+    if OPTIONS.passwd:
+        if not common.which("sshpass"):
+            print "Cannot use password option. sshpass utility is not installed"
+            sys.exit(1)
+        PASSWD = OPTIONS.passwd
+
+    if OPTIONS.container and OPTIONS.dock:
+        print "Please chose -c or --dock, not both."
+        PARSER.print_help()
+        sys.exit(1)
+
+    if OPTIONS.container:
+        common.CONTAINER_NAME = "object-main"
+
+    if OPTIONS.dock:
+        common.CONTAINER_NAME = OPTIONS.dock
+
+    # check the print return value flag
+    if OPTIONS.prtret:
+        common.PRINT_RET_VAL = True
+
+    # run the command
+    rexec(HOSTS, PASSWD, " ".join(ARGS))

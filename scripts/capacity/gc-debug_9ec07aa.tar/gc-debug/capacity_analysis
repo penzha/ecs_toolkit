@@ -1,0 +1,415 @@
+data_output_folder=$1
+operations=$2
+scriptabsolutename=`realpath $0`
+foldername=`dirname $scriptabsolutename`
+
+CHUNK_CAPACITY=134217600
+ExpectedFragmentationLossPercentage=0.03
+ExpectedBtreePercentage=0.03
+ExpectedBtreeGarbagePercentage=0.01
+
+if [ -z $data_output_folder ]; then
+	data_output_folder="/tmp/output/"
+fi
+
+if [ ! -d "$data_output_folder" ]; then
+	mkdir -p $data_output_folder
+fi
+
+MACHINES_FILE=/home/admin/MACHINES
+if [ ! -f $MACHINES_FILE ]; then
+    echo "Cannot find "$MACHINES_FILE", Please generate it first. Try 'getrackinfo -c "$MACHINES_FILE"'"
+    exit -1
+fi
+
+DATA_IP=$(netstat -an | awk '/:9020.*LISTEN/{print $4}' | awk -F : '{print $1}')
+MGMT_IP=$(netstat -an | awk '/:443.*LISTEN/{print $4}' | awk -F : '{print $1}')
+DTQUERY_IP=$(netstat -an | awk '/:9091.*LISTEN/{print $4}' | awk -F : '{print $1}')
+
+if [ -z $DATA_IP ]; then
+	echo "DATA_IP missing, is object container running on this node?"
+	exit -1
+fi
+if [ -z $MGMT_IP ]; then
+	echo "MGMT_IP missing, is object container running on this node?"
+	exit -1
+fi
+if [ -z $DTQUERY_IP ]; then
+	echo "DTQUERY_IP missing, is object container running on this node?"
+	exit -1
+fi
+
+function do_CT_dump()
+{
+    echo "Start to get CT dump by chunk_extract"
+    perl  $foldername/chunk_extract $DATA_IP 1
+    if [ $? != 0 ]; then
+	    echo "Failed to get CT dump by chunk_extract for level 1 CT DTs"
+    	exit 1
+    fi
+    perl $foldername/chunk_extract $DATA_IP 2
+    if [ $? != 0 ]; then
+	    echo "Failed to get CT dump by chunk_extract for level 2 CT DTs"
+    	exit 2
+    fi
+
+    mv FinalData_1 $data_output_folder
+    if [ $? != 0 ]; then
+	    echo "Failed to mv FinalData_1 $data_output_folder/, please manual move it"
+    fi
+    mv FinalData_2 $data_output_folder
+    if [ $? != 0 ]; then
+	    echo "Failed to mv FinalData_2 $data_output_folder/, please manual move it"
+    fi
+}
+
+function do_gc_check()
+{
+    echo "Start to get garbage data from gc_check.sh..."
+    sh $foldername/gc_check.sh -repo > $data_output_folder/gc_check_repo
+    if [ $? != 0 ]; then
+	    echo "Failed to get REPO garbage data from gc_check.sh, please try again \"$0 $data_output_folder true\""
+    fi
+    sh $foldername/gc_check.sh -btree > $data_output_folder/gc_check_btree
+    if [ $? != 0 ]; then
+	    echo "Failed to get BTREE garbage data from gc_check.sh, please try again \"$0 $data_output_folder true\""
+    fi
+}
+
+function do_collect_metering_data()
+{
+    echo "Start to collect metering data..."
+    sh $foldername/metering_extract $DTQUERY_IP $data_output_folder/metering_data
+    if [ $? != 0 ]; then
+	    echo "Failed to collect metering data, please try again \"$0 $data_output_folder true\""
+    fi
+}
+
+function do_collect_capacity_usage()
+{
+    echo "Start to get total/used/free capacity..."
+    chmod +x $foldername/check_node_capacity.sh
+    sudo -i $foldername/check_node_capacity.sh > $data_output_folder/check_node_capacity_output
+    if [ $? != 0 ]; then
+	    echo "Failed to get total/used/free capacity, please try again \"$0 $data_output_folder true\""
+    fi
+}
+
+function do_collect_capacity_breakdown_from_stats()
+{
+    echo "Start to get capacity breakdown from stats framework..."
+    sh $foldername/get_capacity_from_stats.sh $MGMT_IP $data_output_folder
+    if [ $? != 0 ]; then
+	    echo "Failed to get capacity breakdown from stats framework, please try again \"$0 $data_output_folder true\""
+	    exit 9
+    fi
+}
+
+function analysis_ct_dump()
+{
+    echo "Start to get CT usage breakdown from CT dump result..."
+    sh $foldername/analyse_chunk_dump $data_output_folder/FinalData_1 > $data_output_folder/chunk_dump_analysis_level1
+    sh $foldername/analyse_chunk_dump $data_output_folder/FinalData_2 > $data_output_folder/chunk_dump_analysis_level2
+}
+
+function generate_final_report()
+{
+    echo "Generate Final Report..."
+
+    # for Capacity Utilization Overview
+    UsedCapacityGB=`grep '^Used Space' $data_output_folder/check_node_capacity_output | awk '{print $4}'`
+    AvailableCapacityGB=`grep '^Free Space' $data_output_folder/check_node_capacity_output | awk '{print $4}'`
+    TotalCapacityGB=`grep '^Total Space' $data_output_folder/check_node_capacity_output | awk '{print $4}'`
+    TotalIngestedUserDataGB=`grep '^Total:' $data_output_folder/metering_data | awk  -F',' '{print $2}'`
+    TotalIngestedUserDataCount=`grep '^Total:' $data_output_folder/metering_data | awk  -F',' '{print $3}'`
+    if [ -z "$TotalIngestedUserDataGB" ]; then
+        echo "Failed to get User Injected User Data from Metering"
+        exit 1
+    fi
+
+    # get garbage data
+    RemainingREPOGarbageGB=`grep '^Remaining Garbage' $data_output_folder/gc_check_repo | awk '{print $4}'`
+    PartialREPOGarbageGB=`grep '^Remaining Partial' $data_output_folder/gc_check_repo | awk '{print $4}'`
+    CleanupJobsCount=`grep '^Total Jobs' $data_output_folder/gc_check_repo | awk '{print $4}'`
+    MetadataGCTaskCount=`grep '^Total Tasks' $data_output_folder/gc_check_btree | awk '{print $4}'`
+    RemainingBtreeGarbageGB=`grep '^Remaining Garbage' $data_output_folder/gc_check_btree | awk '{print $4}'`
+    PartialBtreeGarbageGB=`grep '^Remaining Partial' $data_output_folder/gc_check_btree | awk '{print $4}'`
+    ReclaimablePartialBtreeGarbageGB=`grep '^Reclaimable Partial' $data_output_folder/gc_check_btree | awk '{print $4}'`
+
+    [ -z "$RemainingREPOGarbageGB" ] && RemainingREPOGarbageGB=0
+    [ -z "$PartialREPOGarbageGB" ] && PartialREPOGarbageGB=0
+    [ -z "$CleanupJobsCount" ] && CleanupJobsCount=0
+    [ -z "$MetadataGCTaskCount" ] && MetadataGCTaskCount=0
+    [ -z "$RemainingBtreeGarbageGB" ] && RemainingBtreeGarbageGB=0
+    [ -z "$PartialBtreeGarbageGB" ] && PartialBtreeGarbageGB=0
+    [ -z "$ReclaimablePartialBtreeGarbageGB" ] && ReclaimablePartialBtreeGarbageGB=0
+
+    # Analysis breakdown
+    TotalREPOCapacity=`grep 'Total LOCAL REPO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    TotalREPOCapacityGB=$(echo "scale=2; $TotalREPOCapacity/1073741824" | bc)
+
+    TotalGEOREPO=`grep 'Total GEO REPO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    TotalGEOREPOGB=$(echo "scale=2; $TotalGEOREPO/1073741824" | bc)
+
+    REPOSealPercentage=`grep 'Avg REPO Sealed Percentage - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    BtreeSealPercentageLv1=`grep 'Avg BTREE Sealed Percentage - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    BtreeSealPercentageLv2=`grep 'Avg BTREE Sealed Percentage - LOCAL =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $8}'`
+    JournalSealPercentageLv2=`grep 'Avg JOURNAL Sealed Percentage - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    JournalSealPercentageLv2=`grep 'Avg JOURNAL Sealed Percentage - LOCAL =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $8}'`
+
+    LocalMirrorProtection=`grep 'Total LOCAL REPO Mirror Protection Overhead =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    LocalECProtection=`grep 'Total LOCAL REPO EC Protection Overhead =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    GeoMirrorProtection=`grep 'Total GEO REPO Mirror Protection Overhead =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+    GeoECProtection=`grep 'Total GEO REPO EC Protection Overhead =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $8}'`
+
+    LocalMirrorProtectionGB=$(echo "scale=2; $LocalMirrorProtection/1073741824" | bc)
+    LocalECProtectionGB=$(echo "scale=2; $LocalECProtection/1073741824" | bc)
+    GeoMirrorProtectionGB=$(echo "scale=2; $GeoMirrorProtection/1073741824" | bc)
+    GeoECProtectionGB=$(echo "scale=2; $GeoECProtection/1073741824" | bc)
+
+    LocalTotalProtection=`grep 'Total LOCAL REPO Overall Capacity =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $7}'`
+    GeoTotalProtection=`grep 'Total GEO REPO Overall Capacity =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $7}'`
+
+    LocalTotalProtectionGB=$(echo "scale=2; $LocalTotalProtection/1073741824" | bc)
+    GeoTotalProtectionGB=$(echo "scale=2; $GeoTotalProtection/1073741824" | bc)
+
+    LocalSealedEC=`grep 'Total Sealed Persisted Size Erasure coded - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalSealedMirror=`grep 'Total Sealed Persisted Size Pending EC - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalSealed2Copies=`grep 'Total 2 Copies REPO Persisted Size - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalSealed4Copies=`grep 'Total 4 Copies REPO Persisted Size - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalActiveEC=`grep 'Total Active TYPE-I REPO Persisted Size - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalActiveMirror=`grep 'Total Active TYPE-II REPO Persisted Size - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalDeletingEC=`grep 'Total Deleting REPO Persisted Size EC - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    LocalDeletingMirror=`grep 'Total Deleting REPO Persisted Size - LOCAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+
+    [ -z "$LocalSealedEC" ] && LocalSealedEC=0
+    [ -z "$LocalSealedMirror" ] && LocalSealedMirror=0
+    [ -z "$LocalSealed2Copies" ] && LocalSealed2Copies=0
+    [ -z "$LocalSealed4Copies" ] && LocalSealed4Copies=0
+    [ -z "$LocalActiveEC" ] && LocalActiveEC=0
+    [ -z "$LocalActiveMirror" ] && LocalActiveMirror=0
+    [ -z "$LocalDeletingEC" ] && LocalDeletingEC=0
+    [ -z "$LocalDeletingMirror" ] && LocalDeletingMirror=0
+
+    LocalSealedECGB=$(echo "scale=2; $LocalSealedEC/1073741824" | bc)
+    LocalSealedMirrorGB=$(echo "scale=2; $LocalSealedMirror/1073741824" | bc)
+    LocalSealed2CopiesGB=$(echo "scale=2; $LocalSealed2Copies/1073741824" | bc)
+    LocalSealed4CopiesGB=$(echo "scale=2; $LocalSealed4Copies/1073741824" | bc)
+    LocalActiveECGB=$(echo "scale=2; $LocalActiveEC/1073741824" | bc)
+    LocalActiveMirrorGB=$(echo "scale=2; $LocalActiveMirror/1073741824" | bc)
+    LocalDeletingECGB=$(echo "scale=2; $LocalDeletingEC/1073741824" | bc)
+    LocalDeletingMirrorGB=$(echo "scale=2; $LocalDeletingMirror/1073741824" | bc)
+
+    GeoSealedEC=`grep 'Total Sealed Persisted Size Erasure coded - GEO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    GeoSealedMirror=`grep 'Total Sealed Persisted Size Pending EC - GEO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    GeoActiveMirror=`grep 'Total Active REPO Persisted Size - GEO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    GeoDeletingEC=`grep 'Total Deleting REPO Persisted Size EC - GEO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    GeoDeletingMirror=`grep 'Total Deleting REPO Persisted Size - GEO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+
+    GeoSealedECGB=$(echo "scale=2; $GeoSealedEC/1073741824" | bc)
+    GeoSealedMirrorGB=$(echo "scale=2; $GeoSealedMirror/1073741824" | bc)
+    GeoActiveMirrorGB=$(echo "scale=2; $GeoActiveMirror/1073741824" | bc)
+    GeoDeletingECGB=$(echo "scale=2; $GeoDeletingEC/1073741824" | bc)
+    GeoDeletingMirrorGB=$(echo "scale=2; $GeoDeletingMirror/1073741824" | bc)
+
+    LocalBTREECapacityLv1=`grep 'Total LOCAL BTREE =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    LocalJournalCapacityLv1=`grep 'Total LOCAL JOURNAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    LocalBTREECapacityLv2=`grep 'Total LOCAL BTREE =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $5}'`
+    LocalJournalCapacityLv2=`grep 'Total LOCAL JOURNAL =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $5}'`
+    GeoBTREECapacityLv1=`grep 'Total GEO BTREE =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    GeoJournalCapacityLv1=`grep 'Total GEO JOURNAL =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    GeoBTREECapacityLv2=`grep 'Total GEO BTREE =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $5}'`
+    GeoJournalCapacityLv2=`grep 'Total GEO JOURNAL =' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $5}'`
+
+    LocalBTREECapacityLv1GB=$(echo "scale=2; $LocalBTREECapacityLv1/1073741824" | bc)
+    LocalJournalCapacityLv1GB=$(echo "scale=2; $LocalJournalCapacityLv1/1073741824" | bc)
+    LocalBTREECapacityLv2GB=$(echo "scale=2; $LocalBTREECapacityLv2/1073741824" | bc)
+    LocalJournalCapacityLv2GB=$(echo "scale=2; $LocalJournalCapacityLv2/1073741824" | bc)
+    GeoBTREECapacityLv1GB=$(echo "scale=2; $GeoBTREECapacityLv1/1073741824" | bc)
+    GeoJournalCapacityLv1GB=$(echo "scale=2; $GeoJournalCapacityLv1/1073741824" | bc)
+    GeoBTREECapacityLv2GB=$(echo "scale=2; $GeoBTREECapacityLv2/1073741824" | bc)
+    GeoJournalCapacityLv2GB=$(echo "scale=2; $GeoJournalCapacityLv2/1073741824" | bc)
+
+    DeletingLocalBtreeCapacityLv1=`grep 'Total Deleting Persisted Size BTREE - LOCAL ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingLocalBtreeCapacityLv2=`grep 'Total Deleting Persisted Size BTREE - LOCAL ' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $9}'`
+    DeletingLocalJournalCapacityLv1=`grep 'Total Deleting Persisted Size JOURNAL - LOCAL ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingLocalJournalCapacityLv2=`grep 'Total Deleting Persisted Size JOURNAL - LOCAL ' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $9}'`
+    DeletingGeoBtreeCapacityLv1=`grep 'Total Deleting Persisted Size BTREE - GEO ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingGeoBtreeCapacityLv2=`grep 'Total Deleting Persisted Size BTREE - GEO ' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $9}'`
+    DeletingGeoJournalCapacityLv1=`grep 'Total Deleting Persisted Size JOURNAL - GEO ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingGeoJournalCapacityLv2=`grep 'Total Deleting Persisted Size JOURNAL - GEO ' $data_output_folder/chunk_dump_analysis_level2 | awk '{print $9}'`
+    DeletingLocalMirrorRepoCapacity=`grep 'Total Deleting REPO Persisted Size - LOCAL ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingLocalECRepoCapacity=`grep 'Total Deleting REPO Persisted Size EC - LOCAL ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+    DeletingGeoMirrorRepoCapacity=`grep 'Total Deleting REPO Persisted Size - GEO ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $9}'`
+    DeletingGeoECRepoCapacity=`grep 'Total Deleting REPO Persisted Size EC - GEO ' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $10}'`
+
+    DeletingLocalBtreeCapacityLv1GB=$(echo "scale=2; $DeletingLocalBtreeCapacityLv1/1073741824" | bc)
+    DeletingLocalBtreeCapacityLv2GB=$(echo "scale=2; $DeletingLocalBtreeCapacityLv2/1073741824" | bc)
+    DeletingLocalJournalCapacityLv1GB=$(echo "scale=2; $DeletingLocalJournalCapacityLv1/1073741824" | bc)
+    DeletingLocalJournalCapacityLv2GB=$(echo "scale=2; $DeletingLocalJournalCapacityLv2/1073741824" | bc)
+    DeletingGeoBtreeCapacityLv1GB=$(echo "scale=2; $DeletingGeoBtreeCapacityLv1/1073741824" | bc)
+    DeletingGeoBtreeCapacityLv2GB=$(echo "scale=2; $DeletingGeoBtreeCapacityLv2/1073741824" | bc)
+    DeletingGeoJournalCapacityLv1GB=$(echo "scale=2; $DeletingGeoJournalCapacityLv1/1073741824" | bc)
+    DeletingGeoJournalCapacityLv2GB=$(echo "scale=2; $DeletingGeoJournalCapacityLv2/1073741824" | bc)
+    DeletingLocalMirrorRepoCapacityGB=$(echo "scale=2; $DeletingLocalMirrorRepoCapacity/1073741824" | bc)
+    DeletingLocalECRepoCapacityGB=$(echo "scale=2; $DeletingLocalECRepoCapacity/1073741824" | bc)
+    DeletingGeoMirrorRepoCapacityGB=$(echo "scale=2; $DeletingGeoMirrorRepoCapacity/1073741824" | bc)
+    DeletingGeoECRepoCapacityGB=$(echo "scale=2; $DeletingGeoECRepoCapacity/1073741824" | bc)
+
+    DeletingBtreeCapacityGB=$(echo "scale=2; $DeletingLocalBtreeCapacityLv1GB + $DeletingLocalBtreeCapacityLv2GB + $DeletingGeoBtreeCapacityLv1GB + $DeletingGeoBtreeCapacityLv2GB" | bc)
+    DeletingLocalJournalCapacityGB=$(echo "scale=2; $DeletingLocalJournalCapacityLv1GB + $DeletingLocalJournalCapacityLv2GB" | bc)
+    DeletingGeoJournalCapacityGB=$(echo "scale=2; $DeletingGeoJournalCapacityLv1GB + $DeletingGeoJournalCapacityLv2GB" | bc)
+    DeletingLocalRepoCapacityGB=$(echo "scale=2; $DeletingLocalMirrorRepoCapacityGB + $DeletingLocalECRepoCapacityGB" | bc)
+    DeletingGeoRepoCapacityGB=$(echo "scale=2; $DeletingGeoMirrorRepoCapacityGB + $DeletingGeoECRepoCapacityGB" | bc)
+
+    GeoCache=`grep 'Total CACHE REPO =' $data_output_folder/chunk_dump_analysis_level1 | awk '{print $5}'`
+    GeoCacheGB=$(echo "scale=2; $GeoCache/1073741824" | bc)
+
+    REPOSealPercentageReal=$(echo "scale=2; $REPOSealPercentage / 100" | bc)
+
+    # Used Capacity Breakup
+    DataGCRawPipelineGB=$(echo "scale=2; ($RemainingREPOGarbageGB - $PartialREPOGarbageGB)" | bc)
+    DataGCPipelineGB=$(echo "scale=2; $DataGCRawPipelineGB * 1.33" | bc)
+    UserDataGB=$(echo "scale=2; ($TotalREPOCapacityGB - $DataGCRawPipelineGB) * $REPOSealPercentageReal" | bc)
+    LocalProtectionGB=$(echo "scale=2; $LocalTotalProtectionGB - $TotalREPOCapacityGB - ($DataGCPipelineGB - $DataGCRawPipelineGB)" | bc)
+    FragmentationLossGB=$(echo "scale=2; ($TotalREPOCapacityGB - $DataGCRawPipelineGB) * (1 - $REPOSealPercentageReal)" | bc)
+    MetadataGCPipelineRawGB=$(echo "scale=2; $MetadataGCTaskCount*$CHUNK_CAPACITY/1073741824" | bc)
+    MetadataGCPipelineGB=$(echo "scale=2; $MetadataGCPipelineRawGB * 3" | bc)
+    SystemMetadataGB=$(echo "scale=2; $LocalBTREECapacityLv1GB + $LocalJournalCapacityLv1GB + $LocalBTREECapacityLv2GB + $LocalJournalCapacityLv2GB + $GeoBTREECapacityLv1GB + $GeoJournalCapacityLv1GB + $GeoBTREECapacityLv2GB + $GeoJournalCapacityLv2GB - $MetadataGCPipelineRawGB" | bc)
+    MetadataProtectionOverheadGB=$(echo "scale=2; $SystemMetadataGB * 2" | bc)
+    GeoDataProtectionGB=$(echo "scale=2; $GeoTotalProtectionGB - $TotalGEOREPOGB" | bc)
+
+    TotalUsedCapacityFromBreakdownGB=$(echo "scale=2; $UserDataGB + $LocalProtectionGB + $DataGCPipelineGB + $SystemMetadataGB + $MetadataProtectionOverheadGB + $MetadataGCPipelineGB + $TotalGEOREPOGB + $GeoDataProtectionGB + $GeoCacheGB + $FragmentationLossGB" | bc)
+
+    if [ $(bc <<< "$TotalUsedCapacityFromBreakdownGB <= 0") -eq 1 ]; then
+        echo "Total Used Capacity is 0, quit analysis"
+        exit 1
+    fi
+    
+    ExpectedUserDataGB=$TotalIngestedUserDataGB
+    ExpectedFragmentationLossGB=$(echo "scale=2; $UsedCapacityGB * $ExpectedFragmentationLossPercentage" | bc)
+    ExpectedLocalProtectionGB=$(echo "scale=2; ($TotalREPOCapacityGB) * 0.33" | bc)
+    ExpectedSystemMetadataGB=$(echo "scale=2; $UsedCapacityGB * $ExpectedBtreePercentage" | bc)
+    ExpectedMetadataGCPipeline=$(echo "scale=2; $UsedCapacityGB * $ExpectedBtreeGarbagePercentage" | bc)
+    ExpectedMetadataProtectionOverheadGB=$(echo "scale=2; ($ExpectedSystemMetadataGB + $ExpectedMetadataGCPipeline) * 2" | bc)
+    ExpectedGeoDataProtectionGB=$(echo "scale=2; $TotalGEOREPOGB * 0.33" | bc)
+    ExpectedGeoCacheGB=$(echo "scale=2; $UsedCapacityGB * 0.05" | bc)
+
+    ExpectedLocalECProtectionGB=$(echo "scale=2; $TotalREPOCapacityGB * 0.33" | bc)
+    ExpectedGEOECProtectionGB=$(echo "scale=2; $TotalGEOREPOGB * 0.33" | bc)
+
+    GapBetweenMeteringGB=$(echo "scale=2; $UserDataGB - $PartialREPOGarbageGB - $TotalIngestedUserDataGB" | bc)
+
+    echo -e ========= Capacity Utilization Overview - GB =========
+    echo -e Category,                   Name
+    echo -e Total Capacity,             $TotalCapacityGB
+    echo -e Available Capacity,         $AvailableCapacityGB
+    echo -e Used Capacity,              $UsedCapacityGB
+    echo ""
+    echo -e ========= Injected Data per Namespace =========
+    grep '^namespace:' $data_output_folder/metering_data | awk -F'namespace:' '{print $2}'
+    grep '^Total:' $data_output_folder/metering_data | awk -F'Total:,' '{print "Total Ingested Capacity,"$2}'
+    echo ""
+    echo -e ========= Used Capacity Breakup =========
+    echo -e Metrics,            Value in GB,      Contributes,    Expected,   Deviation
+    echo -e User Data,          $UserDataGB,     $(echo "scale=2; $UserDataGB/$TotalUsedCapacityFromBreakdownGB" | bc),    $TotalIngestedUserDataGB,   $(echo "scale=2; $UserDataGB - $TotalIngestedUserDataGB" | bc)
+    echo -e Local Protection Overhead, $LocalProtectionGB,  $(echo "scale=2; $LocalProtectionGB/$TotalUsedCapacityFromBreakdownGB" | bc), $ExpectedLocalProtectionGB, $(echo "scale=2; $LocalProtectionGB - $ExpectedLocalProtectionGB" | bc)
+    echo -e Data GC Pipeline Capacity,   $DataGCPipelineGB,  $(echo "scale=2; $DataGCPipelineGB/$TotalUsedCapacityFromBreakdownGB" | bc),  ,
+    echo -e System Metadata,    $SystemMetadataGB,   $(echo "scale=2; $SystemMetadataGB/$TotalUsedCapacityFromBreakdownGB" | bc), "< $ExpectedSystemMetadataGB", $(echo "scale=2; $SystemMetadataGB - $ExpectedSystemMetadataGB" | bc)
+    echo -e System Metadata Protection Overhead, $MetadataProtectionOverheadGB,   $(echo "scale=2; $MetadataProtectionOverheadGB/$TotalUsedCapacityFromBreakdownGB" | bc), "< $ExpectedMetadataProtectionOverheadGB", $(echo "$MetadataProtectionOverheadGB - $ExpectedMetadataProtectionOverheadGB" | bc)
+    echo -e Metadata GC pipeline, $MetadataGCPipelineGB,  $(echo "scale=2; $MetadataGCPipelineGB/$TotalUsedCapacityFromBreakdownGB" | bc), "< $ExpectedMetadataGCPipeline", $(echo "scale=2; $MetadataGCPipelineGB - $ExpectedMetadataGCPipeline" | bc),
+    echo -e Replicated User Data, $TotalGEOREPOGB,    $(echo "scale=2; $TotalGEOREPOGB/$TotalUsedCapacityFromBreakdownGB" | bc), ,
+    echo -e Geo Data Protection Overhead, $GeoDataProtectionGB,   $(echo "scale=2; $GeoDataProtectionGB/$TotalUsedCapacityFromBreakdownGB" | bc), $ExpectedGeoDataProtectionGB, $(echo "scale=2; $GeoDataProtectionGB - $ExpectedGeoDataProtectionGB" | bc)
+    echo -e Geo Cache,  $GeoCacheGB, $(echo "scale=2; $GeoCacheGB/$TotalUsedCapacityFromBreakdownGB" | bc), "< $ExpectedGeoCacheGB", $(echo "scale=2; $GeoCacheGB - $ExpectedGeoCacheGB" | bc)
+    echo -e Fragmentation loss, $FragmentationLossGB,   $(echo "scale=2; $FragmentationLossGB/$TotalUsedCapacityFromBreakdownGB" | bc), "< $ExpectedFragmentationLossGB", $(echo "scale=2; $FragmentationLossGB - $ExpectedFragmentationLossGB" | bc)
+    echo -e Total Used Capacity, $TotalUsedCapacityFromBreakdownGB, ,
+    echo ""
+    echo -e ========= Analysis Breakdown of Local Protection Overhead Deviations =========
+    echo -e Metrics,            Value in GB,      Expected,   Deviation
+    echo -e Local Sealed Mirror Capacity, $LocalSealedMirrorGB,   "0", $(echo "scale=2; $LocalSealedMirrorGB - 0" | bc)
+    echo -e Local Active Mirror Capacity, $LocalActiveMirrorGB,,
+    echo -e Local Deleting Mirror Capacity,   $LocalDeletingMirrorGB,,
+    echo ""
+    echo -e Local Sealed EC Capacity, $LocalSealedECGB,,
+    echo -e Local Active EC Capacity, $LocalActiveECGB,,
+    echo -e Local Deleting EC Capacity, $LocalDeletingECGB,,
+    echo ""
+    echo -e Local Sealed 2 Copies Protection, $LocalSealed2CopiesGB, "0", $(echo "scale=2; $LocalSealed2CopiesGB - 0" | bc)
+    echo -e Local Sealed 4 Copies Protection, $LocalSealed4CopiesGB, "0", $(echo "scale=2; $LocalSealed4CopiesGB - 0" | bc)
+    echo ""
+    echo -e ========= Analysis Breakdown of Geo Protection Overhead Deviations =========
+    echo -e Metrics,            Value in GB,      Expected,   Deviation
+    echo -e Geo Sealed Mirror Capacity, $GeoSealedMirrorGB,,
+    echo -e Geo Active Mirror Capacity, $GeoActiveMirrorGB,,
+    echo -e Geo Deleting Mirror Capacity, $GeoDeletingMirrorGB,,
+    echo ""
+    echo -e Geo Sealed EC Protection,   $GeoSealedECGB,,
+    echo -e Geo Deleting Mirror Protection, $GeoDeletingMirrorGB,,
+    echo ""
+    echo -e ========= Analysis Breakdown of System Metadata - BTREE and GC Deviations =========
+    echo -e Metrics,            Value in GB,      Expected,   Deviation
+    echo -e Local BTREE Capacity Level 1, $LocalBTREECapacityLv1GB,,
+    echo -e Local BTREE Capacity Level 2, $LocalBTREECapacityLv2GB,,
+    echo ""
+    echo -e Geo BTREE Capacity Level 1, $GeoBTREECapacityLv1GB,,
+    echo -e Geo BTREE Capacity Level 2, $GeoBTREECapacityLv2GB,,
+    echo ""
+    echo -e Total Detected Garbage, $(echo "$RemainingBtreeGarbageGB" | bc),,
+    echo -e Total Detected Partial Garbage , $PartialBtreeGarbageGB,,
+    echo -e Total Detected Partial Garbage within threshold, $ReclaimablePartialBtreeGarbageGB,,
+    echo ""
+    echo -e Deleting Local BTREE Capacity Level 1, $DeletingLocalBtreeCapacityLv1GB,,
+    echo -e Deleting Local BTREE Capacity Level 2, $DeletingLocalBtreeCapacityLv2GB,,
+    echo ""
+    echo -e Deleting Geo BTREE Capacity Level 1, $DeletingGeoBtreeCapacityLv1GB,,
+    echo -e Deleting Geo BTREE Capacity Level 2, $DeletingGeoBtreeCapacityLv2GB,,
+    echo ""
+    echo -e ========= Analysis Breakdown of System Metadata - Journal =========
+    echo -e Local Journal Capacity Level 1, $LocalJournalCapacityLv1GB,,
+    echo -e Local Journal Capacity Level 2, $LocalJournalCapacityLv2GB,,
+    echo ""
+    echo -e Geo Journal Capacity Level 1, $GeoJournalCapacityLv1GB,,
+    echo -e Geo Journal Capacity Level 2, $GeoJournalCapacityLv2GB, 0, $(echo "$GeoJournalCapacityLv2GB - 0" | bc)
+    echo ""
+    echo -e Deleting Local Journal Capacity Level 1, $DeletingLocalJournalCapacityLv1GB,,
+    echo -e Deleting Local Journal Capacity Level 2, $DeletingLocalJournalCapacityLv2GB,,
+    echo ""
+    echo -e Deleting Geo Journal Capacity Level 1, $DeletingGeoJournalCapacityLv1GB,,
+    echo -e Deleting Geo Journal Capacity Level 2, $DeletingGeoJournalCapacityLv2GB,,
+    echo ""
+    echo -e ========= Analysis Breakdown of User Data and GC Deviations =========
+    echo -e Metrics,            Value in GB,      Expected,   Deviation
+    echo -e Gap Between Metering Data, $GapBetweenMeteringGB,,
+    echo ""
+    echo -e Detected but not in GC Pipeline, $PartialREPOGarbageGB,,
+    echo -e GC Verification Garbage, $(echo "scale=2; $RemainingREPOGarbageGB - $PartialREPOGarbageGB" | bc),,
+    echo -e Pending Cleanup Jobs, $CleanupJobsCount,,
+    echo ""
+    echo -e Deleting Local REPO Capacity, $DeletingLocalRepoCapacityGB,,
+}
+
+if [ -z $operations ]; then
+    do_CT_dump
+    do_gc_check
+    do_collect_metering_data
+    do_collect_capacity_usage
+    analysis_ct_dump
+    generate_final_report
+    echo ""
+    echo "Successfully generate the report"
+elif [ $operations = "do_CT_dump" ]; then
+    do_CT_dump
+elif [ $operations = "do_gc_check" ]; then
+    do_gc_check
+elif [ $operations = "do_collect_metering_data" ]; then
+    do_collect_metering_data
+elif [ $operations = "do_collect_capacity_usage" ]; then
+    do_collect_capacity_usage
+elif [ $operations = "analysis_ct_dump" ]; then
+    analysis_ct_dump
+elif [ $operations = "generate_final_report" ]; then
+    generate_final_report
+    echo ""
+    echo "Successfully generate the report"
+fi
+

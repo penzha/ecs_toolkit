@@ -1,0 +1,177 @@
+#!/bin/bash
+
+YELLOW='\033[1;33m'
+LIGHT_BLUE='\033[1;34m'
+LIGHT_PURPLE='\033[1;35m'
+LIGHT_GREEN='\033[1;32m'
+NC='\033[0m'
+
+ECHO="/bin/echo -e"
+SCRIPTNAME="$(basename $0)"
+
+DEBUG=0
+
+WORK_DIR=/tmp/object_check/
+mkdir -p ${WORK_DIR}
+
+# search LS table to find all objects with object_owner_history, save it to file OBJECT_OWNER_HISTORY.$timestamp
+function get_objownerhistory_from_ls {
+    curl -s "http://${ip_addr}:9101/diagnostic/LS/0/DumpAllKeys/LIST_ENTRY?type=OBJECT_OWNER_HISTORY" | grep schemaType > ${WORK_DIR}/OBJECT_OWNER_HISTORY.$timestamp
+}
+
+# extract one object's update info into different temp files (index by sequence)
+function extractUpdateBySequence {
+	lines=($(grep -n "schemaType" $1 | awk -F ":" '{print $1}'))
+	
+    for i in $(seq 0 $((${#lines[@]}-1)))
+    do
+        count=$((i+1))
+        len=$((${#lines[@]}-1))
+        startLine=$((${lines[$i]}))
+        if [ "$i" != "$len" ]
+        then
+            endLine=$((${lines[$((i+1))]}-2))
+        else
+            endLine=$(cat $1 | wc -l)
+        fi
+        awk "NR>=$startLine && NR<=$endLine {print}" $1 > $1.$((i+1))
+    done
+}
+
+# check the last update, if its key "dmarker" is true then go to next step. If not, skip this object.
+# check the previous update of the last one, if its key "has-ownerhistory" is true and the last object does not have key "has-ownerhistory", then report this objects.
+function detect_ownerhistory_issue {
+    last_update_isowner=$(grep -A1 'current-zone-is-owner' ${WORK_DIR}/update.$oid.$timestamp.$2 | grep -v 'current-zone-is-owner' | awk -F "\"" '{print $2}')
+
+    last_update_dmarker=$(grep -A1 'dmarker' ${WORK_DIR}/update.$oid.$timestamp.$2 | grep -v 'dmarker' | awk -F "\"" '{print $2}')
+	
+    last_update_hasownership=$(grep -A1 'has-ownerhistory' ${WORK_DIR}/update.$oid.$timestamp.$2 | grep -v 'has-ownerhistory' | awk -F "\"" '{print $2}')
+	
+	previous_last_update_count=$(($2-1))
+	previous_last_update_hasownership=$(grep -A1 'has-ownerhistory' ${WORK_DIR}/update.$oid.$timestamp.$previous_last_update_count | grep -v 'has-ownerhistory' | awk -F "\"" '{print $2}')
+	
+	if [ "$last_update_dmarker" = "true" ]
+	then
+	    if [ "$previous_last_update_hasownership" = "true" ]
+		then
+			if [ -z "$last_update_hasownership" ]
+			then
+		        printf "Object: $1 detect has-ownerhistory missing issue. \n"
+				echo "Object: $1 detect has-ownerhistory missing issue." >> ${WORK_DIR}/result.$timestamp
+		    fi
+		fi
+	fi
+}
+
+# retrieve oid according to parent/child (save it to file oid_update.tmp during debug mode)
+# save each update info to separate files
+function get_oid_update {
+    while read line; do
+        parent=$(echo $line | awk -F " " '{print $6}')
+		child=$(echo $line | tr -d '\r' | awk -F "child " '{print $2}')
+		printf "Parsing $parent:$child ...... \n"
+		debug_message "Parsing $parent:$child ...... \n"
+		#echo "Parsing $parent:$child ...... \n" >> ${WORK_DIR}/oid_update.$timestamp
+        
+		# caculate oid from parent/child instead of query it from LS table. 
+		# echo -n "8d57f47976c1ea000643bcff394c7591e4677366a664f4635b86275c5e118dba.75b3d77f-1c50-46b4-b619-9d4433c7a17d_1" | sha256sum
+		oid=$(echo -n "$parent.$child" | sha256sum | awk -F " " '{print $1}')
+		debug_message "$oid"
+		#echo $oid >> ${WORK_DIR}/oid_update.$timestamp
+        
+        # get query url for retrieve update
+		if [[ $DEBUG -eq 1 ]]; then
+		    debug_message "$(curl -s "http://${ip_addr}:9101/diagnostic/OB/0/DumpAllKeys/OBJECT_TABLE_KEY?type=UPDATE&objectId="$oid"" | grep -B1 schemaType)"
+		fi
+        #curl -s "http://${ip_addr}:9101/diagnostic/OB/0/DumpAllKeys/OBJECT_TABLE_KEY?type=UPDATE&objectId="$oid"" | grep -B1 schemaType >> ${WORK_DIR}/oid_update.$timestamp
+        ob_url="$(curl -s "http://${ip_addr}:9101/diagnostic/OB/0/DumpAllKeys/OBJECT_TABLE_KEY?type=UPDATE&objectId="$oid"" | grep -B1 schemaType | grep -v schemaType | tr -d '\r' | sed 's/<.*>//g')"
+        #printf "ob_url: $ob_url \n"
+        
+		# for debug purpose only, remove this after test completed.
+		if [[ $DEBUG -eq 1 ]]; then
+		    debug_message "$(curl -s ""$ob_url"&useStyle=raw&showvalue=gpb")"
+		fi
+		#curl -s ""$ob_url"&useStyle=raw&showvalue=gpb" >> ${WORK_DIR}/oid_update.$timestamp
+		
+        # get update info
+        curl -s ""$ob_url"&useStyle=raw&showvalue=gpb" | grep -A1 'schemaType\|current-zone-is-owner\|omarker\|dmarker\|has-ownerhistory' >> ${WORK_DIR}/update.$oid.$timestamp
+        
+        # save update info into array update[]
+        update_count=$(grep 'schemaType' ${WORK_DIR}/update.$oid.$timestamp | wc -l)
+		
+		if [ $update_count -gt 1 ]
+		then
+		    extractUpdateBySequence ${WORK_DIR}/update.$oid.$timestamp
+		    detect_ownerhistory_issue $oid $update_count
+		fi
+ 
+        debug_message "============ \n"
+        #echo '============' >> ${WORK_DIR}/oid_update.$timestamp
+        
+    done < ${WORK_DIR}/OBJECT_OWNER_HISTORY.$timestamp
+}
+
+function debug_message {
+
+	local _MESSAGE="$*"
+
+	if [[ $DEBUG -eq 1 ]]; then
+		sudo bash -c "echo -e '$_MESSAGE' >> '${WORK_DIR}/oid_update.$timestamp'"
+	fi
+}
+
+function usage
+{
+  $ECHO "Usage:  $SCRIPTNAME"
+  $ECHO "           | [-ip ipaddr]"
+  $ECHO ""
+  $ECHO "Options:"
+  $ECHO "\t-h: Help         - This help screen"
+  $ECHO
+  $ECHO "\t-debug: Debug    - Produces additional debugging output"
+  $ECHO "\t-ip:      		- used when customer using network separation to specify data ip"
+
+  exit 1
+
+}
+
+function parse_args
+{
+	case $1 in
+	"" )
+		;;
+    "-debug" )
+        DEBUG=1
+        ;;
+    "-h" )
+        usage
+        ;;
+    "-ip" )
+        ip_addr=$2
+        ;;
+    *)
+		print_message "ERROR:  Invalid option '${1}'"
+		print_message ""
+        usage
+        ;;
+	esac
+}
+
+function clearFiles {
+    rm -f ${WORK_DIR}/update.*.$timestamp*
+}
+
+######## Main function part #######
+
+timestamp=$(date +"%Y%m%d-%H%M%S")
+ip_addr=`hostname -i`
+
+if [ $# -gt 0 ]
+then
+    parse_args $*
+fi
+
+printf "ip_addr: $ip_addr \n"
+get_objownerhistory_from_ls
+get_oid_update
+clearFiles

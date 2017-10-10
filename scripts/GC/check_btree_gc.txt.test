@@ -1,0 +1,43 @@
+#!/bin/bash
+datetime=`date +%Y%m%d-%H -d  "24 hour ago"`
+
+# get number of ongoing GC candidates
+
+#echo "There are ${on_going_gc} on going GC task"
+
+#get all the nodes on this VDC
+sudo -i getclusterinfo -a /tmp/machineall > /dev/null 2>&1
+
+# get date/hour for last 24 hours
+datetime=`date +%Y%m%d-%H -d  "24 hour ago"`
+hour=`date +%H -d  "24 hour ago"`
+today=`date +%Y%m%d-`
+
+
+# date pattern matching for 24 hours
+if [[ ${hour:0:1} = "0" ]]
+then
+        pattern1=`echo $datetime|  sed 's/^\(.\{10\}\)\(.\)/\1[\2-9]/'`
+        pattern2=`echo $datetime|  sed 's/^\(.\{9\}\)\(.*\)/\1[1-2][0-9]/'`
+        files="/var/log/cm-chunk-reclaim.log.${pattern1}* /var/log/vnest.log.{$pattern2}*  /var/log/cm-chunk-reclaim.log.${today}*  /var/log/cm-chunk-reclaim.log"
+
+elif [[ ${hour:0:1} == "1" ]]
+then
+        pattern1=`echo $datetime| sed 's/^\(.\{10\}\)\(.\)/\1[\2-9]/'`
+        pattern2=`echo $datetime|  sed 's/^\(.\{9\}\)\(.*\)/\12[0-9]/'`
+        files="/var/log/cm-chunk-reclaim.log.${pattern1}* /var/log/vnest.log.{$pattern2}*  /var/log/cm-chunk-reclaim.log.${today}*  /var/log/cm-chunk-reclaim.log"
+else
+        pattern1=`echo $datetime| sed 's/^\(.\{10\}\)\(.\)/\1[\2-3]/'`
+        files="/var/log/cm-chunk-reclaim.log.${pattern1}*  /var/log/vnest.log.${today}*  /var/log/cm-chunk-reclaim.log"
+fi
+
+
+#grep the log
+echo "grepping data from log files......"
+/opt/emc/bin/viprexec -f /tmp/machineall -i -c "ls -ltr ${files}"
+
+# cleanup temp file
+if [[ -d /tmp/machineall ]]
+then
+        rm /tmp/machineall
+fi

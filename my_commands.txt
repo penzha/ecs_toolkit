@@ -1,0 +1,6 @@
+
+watch -n 120 'curl -s http://$(hostname -i):9101/diagnostic/CT/1/DumpAllKeys/CM_TASK?type=REPAIR | grep schemaType -c'
+
+
+
+

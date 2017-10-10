@@ -1,0 +1,370 @@
+FinalData_FileName=$1;
+
+if [ -z $FinalData_FileName ] || [ ! -f $FinalData_FileName ]; then
+    echo "result file name is empty or $FinalData_FileNam not available, quit"
+    exit
+fi
+
+DEBUG=0
+
+SEALED_LENGTH_IDX=$(grep chunk $FinalData_FileName | awk -F, '{for (i = 1; i <= NF; i++){ if($i == "sealedLength") print i;}}');
+IS_EC_ENCODED_IDX=$(grep chunk $FinalData_FileName | awk -F, '{for (i = 1; i <= NF; i++){ if($i == "isEcEncoded") print i;}}');
+LOGICAL_CAPACITY_IDX=$(grep chunk $FinalData_FileName | awk -F, '{for (i = 1; i <= NF; i++){ if($i == "capacity") print i;}}');
+COPIES_IDX=$(grep chunk $FinalData_FileName | awk -F, '{for (i = 1; i <= NF; i++){ if($i == "copies{") print i;}}');
+ 
+Total_BTREE_AVG_SEAL_LENGTH=$(grep -n BTREE $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I; count += 1} END {if (count == 0) print 0; else printf("%d\n", sum/count)}' I=$SEALED_LENGTH_IDX);
+Total_JOURNAL_AVG_SEAL_LENGTH=$(grep -n JOURNAL $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I; count += 1} END {if (count == 0) print 0; else printf("%d\n", sum/count)}' I=$SEALED_LENGTH_IDX);
+Total_REPO_AVG_SEAL_LENGTH=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I; count += 1} END {if (count == 0) print 0; else printf("%d\n", sum/count)}' I=$SEALED_LENGTH_IDX);
+
+REPO_EC=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+COPY_EC=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'COPY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+XOR_EC=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'PARITY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+if [ $DEBUG -eq 1 ]; then
+    grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{count += 1} END {print "LOCAL REPO EC chunk count: "count}'
+    grep -n REPO $FinalData_FileName| grep SEALED | grep 'COPY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{count += 1} END {print "COPY REPO EC chunk count: "count}'
+    grep -n REPO $FinalData_FileName| grep SEALED | grep 'PARITY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{count += 1} END {print "PARITY REPO EC chunk count: "count}'
+fi
+
+Total_EC_LOCAL=$REPO_EC
+Total_EC_GEO=$((COPY_EC + XOR_EC));
+
+REPO_2Copies=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "2") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+REPO_4Copies=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "4") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+COPY=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'COPY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+REPO=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+if [ $DEBUG -eq 1 ]; then
+    grep -n REPO $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{count += 1} END {print "REPO chunk count: "count}'
+fi
+
+PARITY=$(grep -n REPO $FinalData_FileName| grep SEALED | grep 'PARITY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_EC_Applicable_LOCAL=$REPO
+Total_EC_Applicable_GEO=$((COPY + PARITY ));
+
+Total_ACTIVE_REPO_TYPEI=$(grep -n REPO $FinalData_FileName| grep ACTIVE | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ACTIVE_REPO_TYPEII=$(grep -n REPO $FinalData_FileName| grep ACTIVE | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ACTIVE_REPO_COPY=$(grep -n REPO $FinalData_FileName| grep ACTIVE | grep 'REMOTE' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_DELETING_REPO_LOCAL=$(grep -n REPO $FinalData_FileName| grep 'LOCAL' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_DELETING_REPO_EC_LOCAL=$(grep -n REPO $FinalData_FileName| grep 'LOCAL' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_DELETING_REPO_GEO=$(grep -n REPO $FinalData_FileName| grep 'COPY\|PARITY\|REMOTE' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_DELETING_REPO_EC_GEO=$(grep -n REPO $FinalData_FileName| grep 'COPY\|PARITY\|REMOTE' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_ACTIVE_BTREE_LOCAL=$(grep -n BTREE $FinalData_FileName| grep ACTIVE | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ACTIVE_BTREE_GEO=$(grep -n BTREE $FinalData_FileName| grep ACTIVE | grep 'COPY\|REMOTE' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ACTIVE_JOURNAL_LOCAL=$(grep -n JOURNAL $FinalData_FileName| grep ACTIVE | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ACTIVE_JOURNAL_GEO=$(grep -n JOURNAL $FinalData_FileName| grep ACTIVE | grep 'COPY\|REMOTE' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_DELETING_BTREE_LOCAL=$(grep -n BTREE $FinalData_FileName| grep 'LOCAL' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_DELETING_BTREE_COPY=$(grep -n BTREE $FinalData_FileName| grep 'COPY' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_DELETING_JOURNAL_LOCAL=$(grep -n JOURNAL $FinalData_FileName| grep 'LOCAL' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_DELETING_JOURNAL_COPY=$(grep -n JOURNAL $FinalData_FileName| grep 'COPY' | grep 'DELETING\|GEO_DELETING' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_SEALED_BTREE_LOCAL_LOGICAL=$(grep -n BTREE $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_SEALED_BTREE_COPY_LOGICAL=$(grep -n BTREE $FinalData_FileName| grep SEALED | grep 'COPY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_SEALED_JOURNAL_LOCAL_LOGICAL=$(grep -n JOURNAL $FinalData_FileName| grep SEALED | grep 'LOCAL' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_SEALED_JOURNAL_COPY_LOGICAL=$(grep -n JOURNAL $FinalData_FileName| grep SEALED | grep 'COPY' | awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_ENCODED_LOGICAL_1_COPY_EC_TRUE=$(grep -n ENCODED $FinalData_FileName| awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX  | awk -F, '{if($I == " true") print $0}' I=$IS_EC_ENCODED_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ENCODED_LOGICAL_1_COPY_NO_EC=$(grep -n ENCODED $FinalData_FileName| awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX  | awk -F, '{if($I == "") print $0}' I=$IS_EC_ENCODED_IDX | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_ENCODED_LOGICAL_3_COPIES=$(grep -n ENCODED $FinalData_FileName| awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX  | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+
+Total_REMOTE_LOGICAL_1_COPY_NO_EC=$(grep -n REMOTE $FinalData_FileName| awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "1") print $0}' I=$COPIES_IDX  | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+Total_REMOTE_LOGICAL_3_COPIES=$(grep -n REMOTE $FinalData_FileName| awk -F, '{if($I != " 0") print $0}' I=$SEALED_LENGTH_IDX | awk -F, '{if($I == "3") print $0}' I=$COPIES_IDX  | awk -F, '{sum += $I} END {print sum}' I=$LOGICAL_CAPACITY_IDX);
+ 
+[ -z "$Total_SEALED_BTREE_LOCAL_LOGICAL" ] && Total_SEALED_BTREE_LOCAL_LOGICAL=0
+[ -z "$Total_ACTIVE_BTREE_LOCAL" ] && Total_ACTIVE_BTREE_LOCAL=0
+[ -z "$Total_DELETING_BTREE_LOCAL" ] && Total_DELETING_BTREE_LOCAL=0
+[ -z "$Total_SEALED_BTREE_COPY_LOGICAL" ] && Total_SEALED_BTREE_COPY_LOGICAL=0
+[ -z "$Total_ACTIVE_BTREE_GEO" ] && Total_ACTIVE_BTREE_GEO=0
+[ -z "$Total_DELETING_BTREE_COPY" ] && Total_DELETING_BTREE_COPY=0
+
+Total_BTREE_LOCAL_CAPACITY=$((Total_SEALED_BTREE_LOCAL_LOGICAL + Total_ACTIVE_BTREE_LOCAL + Total_DELETING_BTREE_LOCAL));
+Total_BTREE_GEO_CAPACITY=$((Total_SEALED_BTREE_COPY_LOGICAL + Total_ACTIVE_BTREE_GEO + Total_DELETING_BTREE_COPY));
+
+Total_BTREE_LOCAL_PROTECTION=$((Total_SEALED_BTREE_LOCAL_LOGICAL * 2 + Total_ACTIVE_BTREE_LOCAL * 2 + Total_DELETING_BTREE_LOCAL * 2 ));
+Total_BTREE_GEO_PROTECTION=$((Total_SEALED_BTREE_COPY_LOGICAL * 2 + Total_ACTIVE_BTREE_GEO * 2 + Total_DELETING_BTREE_COPY * 2 ));
+
+Total_BTREE_LOCAL=$((Total_BTREE_LOCAL_CAPACITY + Total_BTREE_LOCAL_PROTECTION ));
+Total_BTREE_GEO=$((Total_BTREE_GEO_CAPACITY + Total_BTREE_GEO_PROTECTION));
+Total_BTREE=$((Total_BTREE_LOCAL + Total_BTREE_GEO ));
+
+[ -z "$Total_SEALED_JOURNAL_LOCAL_LOGICAL" ] && Total_SEALED_JOURNAL_LOCAL_LOGICAL=0
+[ -z "$Total_ACTIVE_JOURNAL_LOCAL" ] && Total_ACTIVE_JOURNAL_LOCAL=0
+[ -z "$Total_DELETING_JOURNAL_LOCAL" ] && Total_DELETING_JOURNAL_LOCAL=0
+[ -z "$Total_SEALED_JOURNAL_COPY_LOGICAL" ] && Total_SEALED_JOURNAL_COPY_LOGICAL=0
+[ -z "$Total_ACTIVE_JOURNAL_GEO" ] && Total_ACTIVE_JOURNAL_GEO=0
+[ -z "$Total_DELETING_JOURNAL_COPY" ] && Total_DELETING_JOURNAL_COPY=0
+
+Total_JOURNAL_LOCAL_CAPACITY=$((Total_SEALED_JOURNAL_LOCAL_LOGICAL + Total_ACTIVE_JOURNAL_LOCAL + Total_DELETING_JOURNAL_LOCAL ));
+Total_JOURNAL_GEO_CAPACITY=$((Total_SEALED_JOURNAL_COPY_LOGICAL + Total_ACTIVE_JOURNAL_GEO + Total_DELETING_JOURNAL_COPY ));
+
+Total_JOURNAL_LOCAL_PROTECTION=$((Total_SEALED_JOURNAL_LOCAL_LOGICAL * 2 + Total_ACTIVE_JOURNAL_LOCAL * 2 + Total_DELETING_JOURNAL_LOCAL * 2 ));
+Total_JOURNAL_GEO_PROTECTION=$((Total_SEALED_JOURNAL_COPY_LOGICAL * 2 + Total_ACTIVE_JOURNAL_GEO * 2 + Total_DELETING_JOURNAL_COPY * 2 ));
+
+Total_JOURNAL_LOCAL=$((Total_JOURNAL_LOCAL_CAPACITY + Total_JOURNAL_LOCAL_PROTECTION ));
+Total_JOURNAL_GEO=$((Total_JOURNAL_GEO_CAPACITY + Total_JOURNAL_GEO_PROTECTION ));
+Total_JOURNAL=$((Total_JOURNAL_LOCAL + Total_JOURNAL_GEO ));
+
+[ -z "$Total_EC_Applicable_LOCAL" ] && Total_EC_Applicable_LOCAL=0
+[ -z "$Total_EC_LOCAL" ] && Total_EC_LOCAL=0
+[ -z "$REPO_2Copies" ] && REPO_2Copies=0
+[ -z "$REPO_4Copies" ] && REPO_4Copies=0
+[ -z "$Total_ACTIVE_REPO_TYPEI" ] && Total_ACTIVE_REPO_TYPEI=0
+[ -z "$Total_DELETING_REPO_LOCAL" ] && Total_DELETING_REPO_LOCAL=0
+[ -z "$Total_ACTIVE_REPO_TYPEII" ] && Total_ACTIVE_REPO_TYPEII=0
+[ -z "$Total_DELETING_REPO_EC_LOCAL" ] && Total_DELETING_REPO_EC_LOCAL=0
+[ -z "$Total_EC_Applicable_GEO" ] && Total_EC_Applicable_GEO=0
+[ -z "$Total_EC_GEO" ] && Total_EC_GEO=0
+[ -z "$Total_DELETING_REPO_GEO" ] && Total_DELETING_REPO_GEO=0
+[ -z "$Total_ACTIVE_REPO_COPY" ] && Total_ACTIVE_REPO_COPY=0
+[ -z "$Total_EC_GEO" ] && Total_EC_GEO=0
+[ -z "$Total_DELETING_REPO_EC_GEO" ] && Total_DELETING_REPO_EC_GEO=0
+[ -z "$Total_ENCODED_LOGICAL_1_COPY_NO_EC" ] && Total_ENCODED_LOGICAL_1_COPY_NO_EC=0
+[ -z "$Total_REMOTE_LOGICAL_1_COPY_NO_EC" ] && Total_REMOTE_LOGICAL_1_COPY_NO_EC=0
+
+Total_REPO_LOCAL_CAPACITY=$(echo "$Total_EC_Applicable_LOCAL + $Total_ACTIVE_REPO_TYPEI + $Total_DELETING_REPO_LOCAL + $Total_ACTIVE_REPO_TYPEII + $Total_DELETING_REPO_EC_LOCAL" | bc);
+Total_REPO_GEO_CAPACITY=$(echo "$Total_EC_Applicable_GEO + $Total_DELETING_REPO_GEO + $Total_ACTIVE_REPO_COPY + $Total_DELETING_REPO_EC_GEO" | bc);
+
+Total_REPO_LOCAL_MIRROR=$(echo "$Total_EC_Applicable_LOCAL * 2.33 - $Total_EC_LOCAL * 2.33 + $Total_ACTIVE_REPO_TYPEI * 2.33 + $Total_DELETING_REPO_LOCAL * 2.33" | bc);
+Total_REPO_LOCAL_EC=$(echo "$Total_EC_LOCAL * 0.33 + $Total_ACTIVE_REPO_TYPEII * 0.33 + $Total_DELETING_REPO_EC_LOCAL * 0.33" | bc);
+Total_REPO_LOCAL=$(echo "$Total_REPO_LOCAL_CAPACITY + $Total_REPO_LOCAL_MIRROR + $Total_REPO_LOCAL_EC + $REPO_2Copies * 0.33 + $REPO_4Copies * 3" | bc);
+
+Total_REPO_GEO_MIRROR=$(echo "$Total_EC_Applicable_GEO * 2 - $Total_EC_GEO * 2 + $Total_DELETING_REPO_GEO * 2 + $Total_ACTIVE_REPO_COPY * 2" | bc);
+Total_REPO_GEO_EC=$(echo "$Total_EC_GEO * 0.33 + $Total_DELETING_REPO_EC_GEO * 0.33" | bc);
+Total_REPO_GEO=$(echo "$Total_REPO_GEO_CAPACITY + $Total_REPO_GEO_MIRROR + $Total_REPO_GEO_EC" | bc);
+
+Total_REPO_CACHE=$(echo "$Total_ENCODED_LOGICAL_1_COPY_NO_EC + $Total_REMOTE_LOGICAL_1_COPY_NO_EC" | bc);
+Total_REPO=$(echo "$Total_REPO_LOCAL + $Total_REPO_GEO + $Total_REPO_CACHE" | bc);
+
+[ -z "$Total_REPO_CACHE" ] && Total_REPO_CACHE=0
+
+[ -z "$Total_REPO_LOCAL_CAPACITY" ] && Total_REPO_LOCAL_CAPACITY=0
+[ -z "$Total_REPO_GEO_CAPACITY" ] && Total_REPO_GEO_CAPACITY=0
+[ -z "$Total_BTREE_LOCAL_CAPACITY" ] && Total_BTREE_LOCAL_CAPACITY=0
+[ -z "$Total_BTREE_GEO_CAPACITY" ] && Total_BTREE_GEO_CAPACITY=0
+[ -z "$Total_JOURNAL_LOCAL_CAPACITY" ] && Total_JOURNAL_LOCAL_CAPACITY=1
+[ -z "$Total_JOURNAL_GEO_CAPACITY" ] && Total_JOURNAL_GEO_CAPACITY=1
+
+Total_CAPACITY=$(echo "$Total_REPO_LOCAL_CAPACITY+ $Total_REPO_GEO_CAPACITY + $Total_BTREE_LOCAL_CAPACITY + $Total_BTREE_GEO_CAPACITY + $Total_JOURNAL_LOCAL_CAPACITY + $Total_JOURNAL_GEO_CAPACITY" | bc);
+Total_REPO_CAPACITY=$(echo "$Total_REPO_LOCAL_CAPACITY+ $Total_REPO_GEO_CAPACITY" | bc);
+Total_BTREE_CAPACITY=$(echo "$Total_BTREE_LOCAL_CAPACITY+ $Total_BTREE_GEO_CAPACITY" | bc);
+Total_JOURNAL_CAPACITY=$(echo "$Total_JOURNAL_LOCAL_CAPACITY+ $Total_JOURNAL_GEO_CAPACITY" | bc);
+
+REPO_CAPACITY_PERCENTAGE=$(echo "scale=2; $Total_REPO_CAPACITY * 100 / $Total_CAPACITY" | bc);
+BTREE_CAPACITY_PERCENTAGE=$(echo "scale=2; $Total_BTREE_CAPACITY * 100 / $Total_CAPACITY" | bc);
+JOURNAL_CAPACITY_PERCENTAGE=$(echo "scale=2; $Total_JOURNAL_CAPACITY * 100 / $Total_CAPACITY" | bc);
+
+[ -z "$Total_BTREE" ] && Total_BTREE=0
+[ -z "$Total_JOURNAL" ] && Total_JOURNAL=0
+[ -z "$Total_REPO" ] && Total_REPO=0
+
+Total_Usage=$(echo "$Total_BTREE + $Total_JOURNAL + $Total_REPO" | bc);
+REPO_Usage_PERCENTAGE=$(echo "scale=2; $Total_REPO * 100 / $Total_Usage" | bc);
+BTREE_Usage_PERCENTAGE=$(echo "scale=2; $Total_BTREE * 100 / $Total_Usage" | bc);
+JOURNAL_Usage_PERCENTAGE=$(echo "scale=2; $Total_JOURNAL * 100 / $Total_Usage" | bc);
+
+echo " **************** Btree Chunks *****************";
+echo "";
+echo -e Total Sealed Persisted Size BTREE - LOCAL = $Total_SEALED_BTREE_LOCAL_LOGICAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Active Persisted Size BTREE - LOCAL = $Total_ACTIVE_BTREE_LOCAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Deleting Persisted Size BTREE - LOCAL = $Total_DELETING_BTREE_LOCAL  ===== multiply by 3 for capacity calculations;
+echo "";
+echo -e Total Sealed Persisted Size BTREE - GEO = $Total_SEALED_BTREE_COPY_LOGICAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Active Persisted Size BTREE - GEO = $Total_ACTIVE_BTREE_GEO  ===== multiply by 3 for capacity calculations;
+echo -e Total Deleting Persisted Size BTREE - GEO = $Total_DELETING_BTREE_COPY  ===== multiply by 3 for capacity calculations;
+echo "";
+echo "";
+echo " **************** Journal Chunks *****************";
+echo "";
+echo -e Total Sealed Persisted Size JOURNAL - LOCAL = $Total_SEALED_JOURNAL_LOCAL_LOGICAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Active Persisted Size JOURNAL - LOCAL = $Total_ACTIVE_JOURNAL_LOCAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Deleting Persisted Size JOURNAL - LOCAL = $Total_DELETING_JOURNAL_LOCAL  ===== multiply by 3 for capacity calculations;
+echo "";
+echo -e Total Sealed Persisted Size JOURNAL - GEO = $Total_SEALED_JOURNAL_COPY_LOGICAL  ===== multiply by 3 for capacity calculations;
+echo -e Total Active Persisted Size JOURNAL - GEO = $Total_ACTIVE_JOURNAL_GEO  ===== multiply by 3 for capacity calculations;
+echo -e Total Deleting Persisted Size JOURNAL - GEO = $Total_DELETING_JOURNAL_COPY  ===== multiply by 3 for capacity calculations;
+echo "";
+echo "";
+echo " **************** Repo Chunks *****************";
+echo "";
+echo -e Total Sealed Persisted Size EC applicable - LOCAL = $Total_EC_Applicable_LOCAL;
+echo -e Total Sealed Persisted Size Erasure coded - LOCAL = $Total_EC_LOCAL   ===== multiply by 1.33 for capacity calculations;
+echo -e Total Sealed Persisted Size Pending EC - LOCAL = $((Total_EC_Applicable_LOCAL - Total_EC_LOCAL))  ===== multiply by 3.33 for capacity calculations;
+echo "";
+echo -e Total Active TYPE-I REPO Persisted Size - LOCAL = $Total_ACTIVE_REPO_TYPEI  ===== multiply by 3.33 for capacity calculations;
+echo -e Total Active TYPE-II REPO Persisted Size - LOCAL = $Total_ACTIVE_REPO_TYPEII  ===== multiply by 1.33 for capacity calculations;
+echo "";
+echo -e Total Deleting REPO Persisted Size - LOCAL = $Total_DELETING_REPO_LOCAL  ===== multiply by 3.33 for capacity calculations;
+echo -e Total Deleting REPO Persisted Size EC - LOCAL = $Total_DELETING_REPO_EC_LOCAL  ===== multiply by 1.33 for capacity calculations;
+echo "";
+echo -e Total 2 Copies REPO Persisted Size - LOCAL = $REPO_2Copies  ===== multiply by 3.33 for capacity calculations;
+echo -e Total 4 Copies REPO Persisted Size - LOCAL = $REPO_4Copies  ===== multiply by 1.33 for capacity calculations;
+echo "";
+echo -e Total Sealed Persisted Size EC applicable - GEO = $Total_EC_Applicable_GEO
+echo -e Total Sealed Persisted Size Erasure coded - GEO = $Total_EC_GEO   ===== multiply by 1.33 for capacity calculations;
+echo -e Total Sealed Persisted Size Pending EC - GEO = $((Total_EC_Applicable_GEO - Total_EC_GEO))  ===== multiply by 3.33 for capacity calculations;
+echo "";
+echo -e Total Active REPO Persisted Size - GEO = $Total_ACTIVE_REPO_COPY  ===== multiply by 3 for capacity calculations;
+echo "";
+echo -e Total Deleting REPO Persisted Size - GEO = $Total_DELETING_REPO_GEO  ===== multiply by 3.33 for capacity calculations;
+echo -e Total Deleting REPO Persisted Size EC - GEO = $Total_DELETING_REPO_EC_GEO  ===== multiply by 1.33 for capacity calculations;
+echo "";
+echo "";
+echo " **************** Geo Cache **********************";
+echo "";
+echo -e Total ENCODED with 1 copy = $Total_ENCODED_LOGICAL_1_COPY_NO_EC ===== no multiplication factor;
+echo -e Total REMOTE with 1 copy  = $Total_REMOTE_LOGICAL_1_COPY_NO_EC ===== no multiplication factor;
+echo "";
+echo ""; 
+echo " **************** Capacity Summary and Protection Overhead **********************";
+echo "";
+echo -e Total LOCAL BTREE = $Total_BTREE_LOCAL_CAPACITY
+echo -e Total LOCAL BTREE Protection Overhead = $Total_BTREE_LOCAL_PROTECTION
+echo -e Total LOCAL BTREE Overall Capacity = $Total_BTREE_LOCAL
+echo "";
+echo -e Total GEO BTREE = $Total_BTREE_GEO_CAPACITY
+echo -e Total GEO BTREE Protection Overhead = $Total_BTREE_GEO_PROTECTION
+echo -e Total GEO BTREE Overall Capacity = $Total_BTREE_GEO
+echo "";
+echo -e Total LOCAL JOURNAL = $Total_JOURNAL_LOCAL_CAPACITY
+echo -e Total LOCAL JOURNAL Protection Overhead = $Total_JOURNAL_LOCAL_PROTECTION
+echo -e Total LOCAL JOURNAL Overall Capacity = $Total_JOURNAL_LOCAL
+echo "";
+echo -e Total GEO JOURNAL = $Total_JOURNAL_GEO_CAPACITY
+echo -e Total GEO JOURNAL Protection Overhead = $Total_JOURNAL_GEO_PROTECTION
+echo -e Total GEO JOURNAL Overall Capacity = $Total_JOURNAL_GEO
+echo "";
+echo -e Total LOCAL REPO = $Total_REPO_LOCAL_CAPACITY
+echo -e Total LOCAL REPO Mirror Protection Overhead = $Total_REPO_LOCAL_MIRROR
+echo -e Total LOCAL REPO EC Protection Overhead = $Total_REPO_LOCAL_EC
+echo -e Total LOCAL REPO Mal-format Protection Overhead = $(echo "$REPO_2Copies + $REPO_4Copies" | bc)
+echo -e Total LOCAL REPO Overall Capacity = $Total_REPO_LOCAL
+echo "";
+echo -e Total GEO REPO = $Total_REPO_GEO_CAPACITY
+echo -e Total GEO REPO Mirror Protection Overhead = $Total_REPO_GEO_MIRROR
+echo -e Total GEO REPO EC Protection Overhead = $Total_REPO_GEO_EC
+echo -e Total GEO REPO Overall Capacity = $Total_REPO_GEO
+echo "";
+echo -e Total CACHE REPO = $Total_REPO_CACHE
+echo "";
+echo -e BTREE Capacity Percentage = $BTREE_CAPACITY_PERCENTAGE
+echo -e JOURNAL Capacity Percentage = $JOURNAL_CAPACITY_PERCENTAGE
+echo -e REPO Capacity Percentage = $REPO_CAPACITY_PERCENTAGE
+echo ""; 
+echo " **************** Disk Size Summary **********************";
+echo "";
+echo -e Total BTREE with Protection Overhead = $Total_BTREE
+echo -e Total JOURNAL with Protection Overhead = $Total_JOURNAL
+echo -e Total REPO with Protection Overhead = $Total_REPO
+echo -e Total Used Capacity = $Total_Usage
+echo "";
+echo -e BTREE Disk Usage Percentage = $BTREE_Usage_PERCENTAGE
+echo -e JOURNAL Disk Usage Percentage = $JOURNAL_Usage_PERCENTAGE
+echo -e REPO Disk Usage Percentage = $REPO_Usage_PERCENTAGE
+echo ""; 
+echo ""; 
+echo " ***************** Avg Sealed Length ******************";
+echo "";
+echo -e Avg REPO Sealed Percentage - LOCAL = $(echo "scale=2; $Total_REPO_AVG_SEAL_LENGTH / 1342176" | bc);
+echo -e Avg BTREE Sealed Percentage - LOCAL = $(echo "scale=2; $Total_BTREE_AVG_SEAL_LENGTH / 1342176" | bc);
+echo -e Avg JOURNAL Sealed Percentage - LOCAL = $(echo "scale=2; $Total_JOURNAL_AVG_SEAL_LENGTH / 1342176" | bc);
+echo "";
+echo "";
+
+unset FinalData_FileName;
+unset SEALED_LENGTH_IDX;
+unset IS_EC_ENCODED_IDX;
+unset LOGICAL_CAPACITY_IDX;
+unset COPIES_IDX;
+
+unset Total_BTREE_AVG_SEAL_LENGTH;
+unset Total_JOURNAL_AVG_SEAL_LENGTH;
+unset Total_REPO_AVG_SEAL_LENGTH;
+
+unset REPO_EC;
+unset COPY_EC;
+unset XOR_EC;
+unset Total_EC_LOCAL;
+unset Total_EC_GEO;
+
+unset COPY;
+unset REPO;
+unset PARITY;
+
+unset Total_EC_Applicable_LOCAL;
+unset Total_EC_Applicable_GEO;
+
+unset Total_ACTIVE_REPO_TYPEI;
+unset Total_ACTIVE_REPO_TYPEII;
+unset Total_ACTIVE_REPO_COPY;
+
+unset Total_DELETING_REPO_LOCAL;
+unset Total_DELETING_REPO_EC_LOCAL;
+unset Total_DELETING_REPO_GEO;
+unset Total_DELETING_REPO_EC_GEO;
+
+unset Total_ACTIVE_BTREE_LOCAL;
+unset Total_ACTIVE_JOURNAL_GEO;
+
+unset Total_DELETING_BTREE_LOCAL;
+unset Total_DELETING_BTREE_COPY;
+unset Total_DELETING_JOURNAL_LOCAL;
+unset Total_DELETING_JOURNAL_COPY;
+
+unset Total_SEALED_BTREE_LOCAL_LOGICAL;
+unset Total_SEALED_BTREE_COPY_LOGICAL;
+unset Total_SEALED_JOURNAL_LOCAL_LOGICAL;
+unset Total_SEALED_JOURNAL_COPY_LOGICAL;
+
+unset Total_ENCODED_LOGICAL_1_COPY_EC_TRUE;
+unset Total_ENCODED_LOGICAL_1_COPY_NO_EC;
+unset Total_ENCODED_LOGICAL_3_COPIES;
+
+unset Total_REMOTE_LOGICAL_1_COPY_NO_EC;
+unset Total_REMOTE_LOGICAL_3_COPIES;
+
+unset Total_BTREE_LOCAL_CAPACITY;
+unset Total_BTREE_GEO_CAPACITY;
+
+unset Total_BTREE_LOCAL;
+unset Total_BTREE_GEO;
+unset Total_BTREE;
+
+unset Total_JOURNAL_LOCAL_CAPACITY;
+unset Total_JOURNAL_GEO_CAPACITY;
+
+unset Total_JOURNAL_LOCAL;
+unset Total_JOURNAL_GEO;
+unset Total_JOURNAL;
+
+unset Total_REPO_LOCAL_CAPACITY;
+unset Total_REPO_GEO_CAPACITY;
+
+unset Total_REPO_LOCAL_MIRROR;
+unset Total_REPO_LOCAL_EC;
+unset Total_REPO_GEO_MIRROR;
+unset Total_REPO_GEO_EC;
+
+unset Total_REPO_LOCAL;
+unset Total_REPO_GEO;
+unset Total_REPO_CACHE;
+unset Total_REPO;
+
+unset Total_CAPACITY;
+unset Total_REPO_CAPACITY;
+unset Total_BTREE_CAPACITY;
+unset Total_JOURNAL_CAPACITY;
+
+unset REPO_CAPACITY_PERCENTAGE;
+unset BTREE_CAPACITY_PERCENTAGE;
+unset JOURNAL_CAPACITY_PERCENTAGE;
+
+unset Total_Usage;
+unset REPO_Usage_PERCENTAGE;
+unset BTREE_Usage_PERCENTAGE;
+unset JOURNAL_Usage_PERCENTAGE;
+

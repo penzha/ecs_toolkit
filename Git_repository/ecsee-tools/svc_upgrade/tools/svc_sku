@@ -1,0 +1,115 @@
+#!/bin/bash
+
+# Extract SKU values that have been used during install and upgrade.
+#
+# Yes, the best place this seems to be stored is in a LOG
+#
+# Log will contain one or more lines in a format similar to:
+#
+# 2016-07-25 21:04:19,430 0 [main] INFO com.emc.caspian.fabric.installer.Main  -  Initializing Fabric Installer. Invocation: [-operation,INSTALL_HAL,--sku,U300,--topology,/tmp/install/topology.cse,--provision,conf/provisioning.txt,-force]
+# 2016-07-25 21:12:30,694 0 [main] INFO com.emc.caspian.fabric.installer.Main  -  Initializing Fabric Installer. Invocation: [-operation,INSTALL,--sku,U300,--topology,/tmp/install/topology.cse,--provision,conf/provisioning.txt,-force]
+#
+# Extract SKU info from these lines.
+#
+# If the rack has been extended, the various values in the different lines may not match.  The last line *should*
+# be the current SKU, but by default produce a warning in this case (and different error code)
+
+# Return values:
+
+# 100: SKU found is not a valid SKU value
+# 101: No SKU found
+# 102: No installer log found
+
+INSTALLERLOG="/opt/emc/caspian/installer/log/installer.log"
+
+
+usage()
+{
+	echo -e "usage: $0"
+	echo -e "No usage yet!"
+
+	exit 1
+
+}
+
+parse_args()
+{
+	QUIET=false
+
+	while [ -n "$1" ]; do
+		case $1 in
+			"" )
+			;;
+
+			"-h" )
+				usage
+				;;
+			"-q" )
+				QUIET=true
+				shift 1
+				;;
+			* )
+				usage
+				;;
+		esac
+	done
+}
+
+
+
+
+# Main logic
+
+parse_args $*
+
+if [ ! -f "$INSTALLERLOG" ]; then
+	echo "ERROR: Installer Log at '${INSTALLERLOG}' not found or is not a file.  Be sure to run on the installer node.  Exiting."
+	exit 102
+fi
+
+# XXX - installer logs could be archived, we need to zgrep installer.log*
+SKUs=( `grep -i -- --sku "${INSTALLERLOG}" | awk -F--sku, '{ print $2 }' | awk -F, '{ print $1 }'` )
+#SKUs=( "U700" "U3000" " C90" "C9000000 " "asdf" )
+#SKUs=( "U700" "U3000" " C90" "C9000000 " )
+
+LatestSKU=""
+
+for SKU in "${SKUs[@]}"; do
+	#echo "SKU: $SKU"
+
+	# Sanity check that this looks like a real SKU (e.g. C90 or U3000)
+
+	if [[ "$SKU" =~ [A-Z][0-9]* ]]; then
+
+		# Check whether the current SKU is the same as previous SKUs.  If not, display a warning (if not
+		# surpressed)
+
+		if [[ $LatestSKU != "" && "$SKU" != "$LatestSKU" ]]; then
+			if [[ "$QUIET" = false ]]; then
+				echo "WARNING: Multiple SKUs.  Old SKU: $LatestSKU" >&2
+			fi
+		fi
+
+
+		LatestSKU="$SKU"
+	else
+		echo "ERROR:  SKU found, '$SKU', is not a valid SKU number.  Exiting." >&2
+		exit 100
+	fi
+done
+
+
+if [[ "$LatestSKU" == "" ]]; then
+	echo "ERROR: No SKU found.  Exiting."
+	exit 101
+fi
+
+
+echo "$LatestSKU"
+
+
+
+
+
+
+

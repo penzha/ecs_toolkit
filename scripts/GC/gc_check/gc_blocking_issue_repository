@@ -1,0 +1,14 @@
+#### repository file that contains known GC blocking issue
+#### grep keywords from logs of recent n day(s) in all nodes of local VDC
+#### if there's any of keywords found, GC is very likely blocked.
+#### if keywords are found, doesn't means it hit exact issue of related storage JIRA
+#### 
+## the fields to describe an issue, seperated by ';'
+# 1.issue id; 2.storage JIRA; 3.known ee JIRAs; 4.issue description; 5.keywords in log; 6.log file name; 7.severity; 8.category(BtreeGC/RepoGC/Geo); 9.workaround; 10.solution; 11.action plan for CS; 12.extra info;
+0001;STORAGE-15780;;wrong empty chunk secondary;WSCritical: \[GEO\] chunk .* has wrong empty secondary|WSCritical: \[GEO\] successfully purge empty secondary for chunk;cm-error.log;Critical;Geo;;;please escalate to EE;
+0002;STORAGE-14812;;chunk not replicated;WSCritical: \[GEO\] chunk .* primary zone .* replicated but remote not;cm-error.log;Critical;Geo;;;please escalate to EE;
+0003;STORAGE-16462,STORAGE-15671;;geo blocked for at least 20 days;WSCritical: \[GEO\] chunks .* not replicated longer than .* days for checker;cm-error.log;Critical;Geo;;;please escalate to EE;
+0004;STORAGE-14436;;object update missing;WSCritical: \[GC\] CLEANUPJOB_TASK: DeleteJob Scanner .* was blocked by ERROR_OBJECT_UPDATE_MISSING|WSCritical: \[GC\] REPO_GC_VERIFICATION_TASK: REPO_GC_Verification Scanner .* was blocked by ERROR_OBJECT_UPDATE_MISSING;blobsvc-error.log; Critical; BtreeGC/RepoGC;;;please escalate to EE;
+0005;;;UPDATE-0 is dmarker for versioning enabled bucket;WSCritical: \[GC\] CLEANUPJOB_TASK: DeleteJob Scanner .* was blocked by|WSCritical: \[GC\] REPO_GC_VERIFICATION_TASK: REPO_GC_Verification Scanner .* was blocked by;blobsvc-error.log; Critical; RepoGC;;;please escalate to EE;
+0006;STORAGE-17780;;huge IC delay;WSCritical: GC - object .* has huge IC delay, lastIndexSeq .*, current seq .*, max IC lag Allowed;blobsvc-error.log;Critical;RepoGC;;;please escalate to EE;
+0007;STORAGE-15711;;chunk not found;WSCritical: \[GC\] BTREE_GC_VERIFICATION_TASK: Btree_GC_Verification Scanner .* was blocked by ERROR_NO_SUCH_CHUNK;cm-error.log ssm-error.log rm-error.log blobsvc-error.log metering-error.log transformsvc-error.log;Critical;BtreeGC;;;please escalate to EE;

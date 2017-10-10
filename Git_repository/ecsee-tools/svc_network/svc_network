@@ -1,0 +1,270 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+
+import datetime
+import logging
+import os
+import re
+import socket
+import sys
+import subprocess
+import argparse
+from svc_base import Common
+
+# grep "2017-03-12" /tmp/repl.out |awk '{print $1 $2}'| sort -u | head -n 1
+#       2017-03-12T17:10:22,326[TaskScheduler-ChunkManager-COMMUNICATOR-ParallelExecutor-502]
+# grep "2017-03-12" /tmp/repl.out |awk '{print $1 $2}'| sort -u | tail -n 1
+#       2017-03-12T17:11:26,981[TaskScheduler-ChunkManager-COMMUNICATOR-ParallelExecutor-675]
+# grep "Bytes successfully sent" /tmp/repl.out|awk '{print $NF}' | awk '{sum+=$1} END {print sum}'
+#   2894203960
+
+
+class NetworkScanner(Common):
+    def __init__(self, args):
+        Common.__init__(self, 'svc_network')
+        # Verbose mode will provide output for each service. Normal output just provides a pass/fail for each
+        # node. Details for each IP:Port combo are always logged regardless of this param
+        self.verbose = args['verbose']
+        self.any_failed = {}
+        self.Global_LogMessage = False
+
+    def ping(self, ip):
+        logging.info('[{}] {}'.format('PING'.rjust(5), ip))
+
+        # Try up to 3 times to ping before failing in case there is a temporary network issue
+        count = 0
+        while count < 3:
+            count += 1
+            if os.system('ping -c 1 {} > /dev/null'.format(ip)) != 0:
+                pass
+            else:
+                return 'pass'
+
+        logging.error('{} is not reachable'.format(ip))
+        return 'fail'
+
+    def ip_scanner(self, server_group, mode='tcp'):
+        """
+        Pings each of the IPs in sequence and if it gets a response, calls port_scanner() for each port the IP has
+
+        :param server_group: dict of IPs and ports to check
+        :param mode: udp or tcp testing for port testing
+        """
+        for node in sorted(server_group):
+            results = [node]
+            # results[node].insert(0, ip)
+            for service in server_group[node]:
+                service_accessible = True
+                for endpoint in server_group[node][service]:
+                    ip, port = endpoint.split(':')
+                    # if not results.get(node):
+                    # self.results[node].append(ping)
+                    logging.info('[{}] {}:{}'.format(service, ip, port))
+                    address = (ip, int(port))
+
+                    count = 0
+                    while count < 3:
+                        count += 1
+                        try:
+                            if 'tcp' in mode:
+                                t = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+                                t.settimeout(2)
+                                t.connect(address)
+                                t.close()
+
+                            if 'udp' in mode:
+                                u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                u.settimeout(2)
+                                buf = 1024
+                                payload = '\x1b' + 47 * '\0'
+
+                                u.sendto(payload, address)
+                                msg, address = u.recvfrom(buf)
+                                u.close()
+                            break
+
+                        except socket.error as msg:
+                            service_accessible = False
+                            logging.error(
+                                '[{}] {}:{} not responding. Message: {}'.format(
+                                    service,
+                                    address[0],
+                                    address[1],
+                                    msg
+                                ),
+                            )
+
+                if not service_accessible:
+                    self.error_log(ip, service)
+                    logging.error('[{}] Service not accessible on {}'.format(service, ip))
+                    results.append('fail')
+                else:
+                    logging.info('[{}] All ports accessible'.format(service))
+                    results.append('pass')
+
+            if self.verbose:
+                self.status_print(results, 2)
+
+    def error_log(self, ip, error_msg):
+        try:
+            self.any_failed[ip].append(error_msg)
+        except KeyError:
+            self.any_failed[ip] = [error_msg]
+
+    def build_ip_list(self):
+        """
+        Iterates through the base list of ports and finds the IP that is listening on them using Common.get_listen_ip.
+        Substitutes 'localhost' for 127.0.0.1 and 0.0.0.0. If an IP is blank, it means nothing was listening on that
+        port
+
+        :return: base_list updated with listen IPs
+        :rtype: dict
+        """
+        if self.verbose:
+            print '\nGenerating the list of IPs to test for connectivity...'
+        base_list = {
+            "nodes": {
+                '1': {
+                    "SSH": [22],
+                    "GUI": [80, 443, 4443],
+                    "Geo": [9094, 9095, 9096, 9097, 9098],
+                    "s3": [9020, 9021, 9026, 9027],
+                    "HDFS": [9040],
+                    "ATMOS": [9022, 9023],
+                    "Swift": [9024, 9025],
+                    "CAS": [3218, 9250],
+                    "NFS": [111, 2049, 10000],
+                }
+            },
+            "rmm": {
+                '1': {
+                    "UI": [80, 443],
+                    "CD": [5120, 5124],
+                    "FD": [5123, 5127],
+                    "Video": [7578, 7582]
+                }
+            }
+        }
+
+        for node in self.rack_info:
+            base_list["nodes"][node] = base_list['nodes']['1'].copy()
+            base_list["rmm"][node] = base_list['rmm']['1'].copy()
+
+        for service in base_list['nodes']['1']:
+            for port in base_list['nodes']['1'][service]:
+                listen_ips = self.get_listen_ip(port, service_name=service, noErrorHandling=True, viprexec=True, quiet=True)
+                for key, value in listen_ips.items():
+                    base_list['nodes'][key][service] = ['{}:{}'.format(value, port) if x == port else x
+                                                        for x in base_list['nodes'][key][service]]
+
+        for service in base_list['rmm']['1']:
+            for port in base_list['rmm']['1'][service]:
+                listen_ips = self.get_listen_ip(port, service_name=service, noErrorHandling=True, viprexec=True, quiet=True)
+                for key, value in listen_ips.items():
+                    base_list['rmm'][key][service] = ['{}:{}'.format(value, port) if x == port else x
+                                                      for x in base_list['rmm'][key][service]]
+
+        return base_list
+
+    def check_hostnames(self, host_name, ip):
+        test = socket.gethostbyname(host_name)
+        if test == ip:
+            test = 'PASS'
+
+    def check_mtu(self, ip):
+        routeinfo = subprocess.check_output(['ip', 'route', 'get', ip])
+        logging.debug('[MTU] {}'.format(routeinfo))
+        dev = re.search('.*dev (\w+) .*', routeinfo).groups()[0]
+        mtuinfo = subprocess.check_output(['ip', 'link', 'show', dev])
+        logging.debug('[MTU] {}'.format(mtuinfo))
+        mtu = re.search('.*mtu ([0-9]+) .*', mtuinfo).groups()[0]
+        if int(mtu) >= 1500:
+            if self.verbose:
+                print '\nMTU: OK'
+        else:
+            self.error_log(ip, 'MTU')
+            if self.verbose:
+                print '\nMTU: {}'.format(mtu)
+
+    def check_bandwidth(self):
+        """
+        Placeholder for a bandwidth check
+        :return:
+        """
+
+    @staticmethod
+    def status_print(message, mode):
+        """
+        Function to provide some nicer status printing
+        :param message: what should be printed
+        :param mode: header (1) or data (2)
+        :return:
+        """
+        if mode == 1:
+            print
+            line = ''
+            # line = '{}'.format(message[0]).ljust(5)
+            # sys.stdout.write(line)
+            for i in message:
+                line += ' {}'.format(i.ljust(5))
+                sys.stdout.write(' {}'.format(i.ljust(5)))
+            sys.stdout.flush()
+            print '\n', '-' * len(line)
+        elif mode == 2:
+            for i in message:
+                sys.stdout.write(' {}'.format(i.ljust(5)))
+            print
+
+    def main(self):
+        to_check = self.build_ip_list()
+        print 'Beginning network connectivity check...'
+
+        if self.verbose:
+            print '\nServices Port Checks'
+            header = ['Node']
+            header.extend(sorted(to_check['nodes']['1']))
+            self.status_print(header, 1)
+        self.ip_scanner(to_check['nodes'])
+
+        if self.verbose:
+            print '\nRMM Port Checks'
+            header = ['Node']
+            header.extend(sorted(to_check['rmm']['1']))
+            self.status_print(header, 1)
+        self.ip_scanner(to_check['rmm'])
+
+        # if self.verbose:
+        #     header = ['NTP IP', 'Ping']
+        #     header.extend(sorted(to_check['ntp']['ports']))
+        #     self.status_print(header, 1)
+        # self.ip_scanner(to_check['ntp'], mode='udp')
+
+        if self.verbose:
+            header = ['Node', 'DNS']
+            dns_ip = self.get_listen_ip(53, 'DNS', viprexec=True, quiet=True)['1']
+            if not dns_ip:
+                self.error_log('No DNS IP retrieved')
+            self.status_print(header, 1)
+        self.ip_scanner(to_check['dns'])
+
+        print
+        if not self.verbose:
+            if self.any_failed:
+                print('There were issues with the following services, check the log for more detailed error messages:')
+                for i in self.any_failed:
+                    print('  {} - {}'.format(i, self.any_failed[i]))
+            else:
+                print('Success! All ports and IPs were accessible')
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='store_true', default=True)
+    return vars(parser.parse_args())
+
+
+if __name__ == '__main__':
+    params = get_args()
+    scanner = NetworkScanner(params)
+    scanner.main()
+    print

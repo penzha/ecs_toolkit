@@ -1,0 +1,175 @@
+#!/usr/bin/python
+
+# Copyright (c) 2016 EMC Corporation
+# All Rights Reserved
+#
+# This software contains the intellectual property of EMC Corporation
+# or is licensed to EMC Corporation from third parties.  Use of this
+# software and the intellectual property contained therein is expressly
+# limited to the terms and conditions of the License Agreement under which
+# it is provided by or on behalf of EMC.
+
+import os
+import subprocess
+import getopt
+import sys
+from subprocess import Popen, PIPE
+from time import sleep,time,strftime
+
+CurScriptName=os.path.basename(__file__)
+Version="1.0"
+
+ParamString='<bean class="com.emc.storageos.data.georeceiver.service.impl.resource.UnsealedChunkDataService"/>'  # String we're going to be commenting out
+CommentedString="<!--"+ParamString+"-->" # Version
+ConfFile="/opt/storageos/conf/georeceiver-conf.xml"
+
+curDate=strftime("%Y-%m-%d_%H.%M.%S")
+mode=""
+
+
+def usage():
+
+	global CurScriptName
+
+	print "Usage: "+CurScriptName+" [options]"
+	print "Version "+Version
+	print
+	print "Enables/disables Georeceiver UnsealedChunkDataService"
+	print
+	print "options:"
+	print "-h, --help        Show this help message and exit"
+	print "-c, --check       Check whether service is enabled or disabled"
+	print "-e, --enable      Enable service"
+	print "-d, --disable     Disable service"
+	print
+
+	exit(1)
+
+def parse_args(argv):
+
+	global mode
+
+	allowedArgs=dict()
+	allowedArgs['short']="hced"
+	allowedArgs['long']=["help","check","enable","disable" ]
+
+	try:
+		opts, args = getopt.getopt(argv,allowedArgs['short'],allowedArgs['long'])
+	except getopt.GetoptError:
+		return("usage")
+
+
+	for opt, arg in opts:
+		if opt in ("-h", "--help"):
+			usage()
+		elif opt in ("-c", "--check"):
+			mode=""
+		elif opt in ("-e", "--enabled"):
+			mode="enable"
+		elif opt in ("-d", "--disabled"):
+			mode="disable"
+		else:
+			usage()
+
+
+
+
+
+def encapsulate_shell_cmd(cmd):
+	return(cmd.replace("'", "'\\''"))
+
+def run_cmd(command, Container=True):
+
+	if Container:
+		command="sudo docker exec object-main sh -c '"+encapsulate_shell_cmd(command)+"'"
+
+	p = Popen(command, shell=True, stdout=PIPE, stderr=PIPE, bufsize=1)
+	stdout=""
+	stderr=""
+
+	stdout, stderr = p.communicate()
+	retval = p.returncode
+
+	VerboseOutput="Command was: \n"
+	VerboseOutput+=command+"\n"
+	VerboseOutput+="\n"
+	VerboseOutput+="stdout was:\n"
+	VerboseOutput+=stdout.strip()+"\n"
+	VerboseOutput+="\n"
+	VerboseOutput+="stderr was:\n"
+	VerboseOutput+=stderr.strip()+"\n"
+
+	cmd_output = {'command':command,
+				 'stdout':stdout,
+	             'stderr':stderr,
+				 'retval':retval,
+				 'verbose':VerboseOutput}
+
+
+	return cmd_output
+
+
+def checkEnabled(ParamString,CommentedString, ConfFile):
+
+	# Check if param exists at all in the file
+
+	cmd="grep '"+ParamString+"' \""+ConfFile+"\""
+	result=run_cmd(cmd)
+
+	if result['retval'] != 0 or result['stdout'] == "":
+		print "ERROR:  Could not find param to change in the config file.\n"
+		print "  Param does not exist, or file not found.\n"
+		print "\n"
+		print result['verbose']
+		exit (100)
+
+	# Check if the param has already been commented
+
+	cmd="grep '"+CommentedString+"' \""+ConfFile+"\""
+	result=run_cmd(cmd)
+
+	if result['retval'] == 1 and result['stdout'] == "":
+		# Param not commented yet
+
+		return "enabled"
+	elif result['retval'] == 0 and result['stdout'] != "":
+		# Param is commented
+		return "disabled"
+	# add else
+
+def ToggleService(ParamString,CommentedString, ConfFile, mode):
+	global curDate
+
+	curStatus=checkEnabled(ParamString,CommentedString, ConfFile)
+
+	if mode+"d" == curStatus:
+		print "Already "+curStatus+", exiting"
+		exit (101)
+
+	if mode=="enable":
+		print "Enabling UnsealedChunkDataService"
+		SearchString=CommentedString
+		ReplaceString=ParamString
+	elif mode=="disable":
+		print "Disabling UnsealedChunkDataService"
+		SearchString=ParamString
+		ReplaceString=CommentedString
+
+
+	cmd='sed -i'+curDate+' \'s:'+SearchString+':'+ReplaceString+':g\' "'+ConfFile+'"'
+	result=run_cmd(cmd)
+
+	print "Restarting georeceiver"
+	run_cmd("kill -9 `pidof georeceiver`", Container=False)
+
+
+############## Main logic ##############
+
+parse_args(sys.argv[1:])
+
+
+
+print "UnsealedChunkDataService is currently "+checkEnabled(ParamString,CommentedString, ConfFile)+"\n"
+
+if mode!="":
+	ToggleService(ParamString,CommentedString, ConfFile, mode)
