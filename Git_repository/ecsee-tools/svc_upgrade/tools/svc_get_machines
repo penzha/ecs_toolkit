@@ -1,9 +1,0 @@
-#!/usr/bin/python
-
-# Return (and validate) a list of nodes in MACHINES file format.
-
-# XXX - What can we do to validate the list?  To make sure that it's
-# complete, that it's not returning stale nodes, to indicate that to
-# the user, etc?
-
-# 

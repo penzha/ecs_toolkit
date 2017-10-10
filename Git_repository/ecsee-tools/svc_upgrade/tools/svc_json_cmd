@@ -1,3 +1,0 @@
-#!/bin/bash
-
-./svc_rest_cmd -j $*
